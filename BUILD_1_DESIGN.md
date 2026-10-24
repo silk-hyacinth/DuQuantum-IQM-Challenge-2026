@@ -25,9 +25,17 @@ sections work as a reference.
   - Without error correction, 22% of shots had the wrong logical value.
   - After decoding, 9.6% ± 0.7% did.
   - So error correction more than halved the error on real hardware.
+- **Baseline logical error rate** (job `01a16fb3`; rounds 1, 2, 3, 4, 6, 8 in
+  both bases; 5,000 shots each; section 7.2):
+  - **\(\varepsilon_L\) = 8.55% ± 0.12% per round (Z memory)**
+  - **\(\varepsilon_L\) = 8.33% ± 0.12% per round (X memory)**
+
+  Every improvement gets measured against these two numbers. Lower is better.
 - **Biggest error source** is data qubits losing their phase while they wait for
   the ancillas to be measured. The fix to try first is IQM's dynamical
   decoupling option.
+- **Teammates:** branch off this branch and follow section 9. It lists the
+  exact commands to test an idea and compare it with the baseline.
 
 ---
 
@@ -209,8 +217,11 @@ generate natively in Qrisp instead, because:
 | `surface_code.py` (our section) | Added to existing file | The generator: layout, CZ schedule, frames, detectors |
 | `check_surface_code.py` | New | Offline self-test, about 2 minutes, no token |
 | `garnet_layout.py` | New | Calibration reader, zero-SWAP placement search, scoring, pinning pass |
-| `run_on_hardware.py` (Qrisp side) | Filled in stubs | Run on hardware, post-process, save, decode, summarise; command-line interface |
+| `run_on_hardware.py` (Qrisp side) | Filled in stubs | `run_qrisp_batch` (many circuits in one job), `run_qrisp` (one circuit), post-processing, saving, decoding, summary, command-line interface |
+| `sweep.py` | New | Round sweep, \(\varepsilon_L\) fit, plot, re-analysis with a different decoder, comparison of two sweeps |
+| `decoders.py` | New | Where alternative decoders go; one worked example |
 | `results/` | New | Every hardware run (`.npz` arrays + `.json` metadata) and dashboard downloads |
+| `results/sweeps/` | New | One `.json` (all points + fits) and one `.png` (plot) per sweep |
 | `BUILD_1_DESIGN.md` | New | This document |
 | `.env` | **Local only, gitignored** | Holds `IQM_TOKEN`; never committed |
 
@@ -334,7 +345,13 @@ priorities rather than a precise number.
 
 ### 5.3 Running, decoding, saving (`run_on_hardware.py`)
 
-`run_qrisp(...)` does six steps:
+`run_qrisp_batch(configs, ...)` sends many circuits as **one** job. Each
+config is a dict like `{"rounds": 3, "basis": "X"}`. One job means one wait
+in the queue and one calibration for every circuit, so a sweep compares like
+with like. `run_qrisp(...)` is the same thing for a single circuit.
+`sweep.py` calls `run_qrisp_batch`.
+
+For each circuit it does six steps:
 
 1. Builds the experiment with no noise; the hardware supplies the real noise.
 2. Reads calibration and picks the best placement.
@@ -411,6 +428,11 @@ message.
 | `python run_on_hardware.py --load results/20261024-145502_garnet_d3_r1_Z_01a16f44.json` | No, no token needed | Re-decodes the first hardware run |
 | `python run_on_hardware.py --rounds 3 --dry-run` | No | Compiles against today's Garnet and prints gate counts, without submitting |
 | `python run_on_hardware.py --rounds 3 --basis X --shots 5000` | **Yes** | Real run; saved to `results/` |
+| `python sweep.py --dry-run` | No | Compiles all 12 sweep circuits against today's Garnet |
+| `python sweep.py --label baseline` | **Yes** (60,000 shots, about 2 minutes) | Full sweep, fit and plot; saved to `results/sweeps/` |
+| `python sweep.py --label dd --dd` | **Yes** | Same sweep with dynamical decoupling (`--herald` adds heralding) |
+| `python sweep.py --load results/sweeps/20261024-165743_baseline.json --decoder decoders:garnet_uniform` | No | Re-decodes the baseline shots with another decoder |
+| `python sweep.py --compare A.json B.json` | No | Compares two sweeps' \(\varepsilon_L\) and says whether the difference is significant |
 
 From Python:
 
@@ -496,7 +518,60 @@ JSON are **identical** to the dashboard download in `results/dashboard/`.
   we use (5.2% error, 8% readout leakage), and **QB6** (10.7% readout
   leakage). Detector 7 sums four data readouts of about 2–3% each.
 - **One round can't give a logical error rate.** That needs the round sweep
-  (section 9).
+  (section 7.2).
+
+### 7.2 The baseline sweep: our first \(\varepsilon_L\)
+
+Job `01a16fb3-d7b9-7189-9d03-7c094f8313de`, Oct 24 2026, 16:57: the same
+circuit and qubits as above, run at 1, 2, 3, 4, 6 and 8 rounds in Z and X,
+5,000 shots each, all in one job, on calibration set `a18a947f…`.
+
+Settings:
+
+- No dynamical decoupling, no heralding.
+- Decoder: PyMatching with uniform 0.3% weights.
+- The server's "circuit longer than T2" rejection is switched off
+  (`max_circuit_duration_over_t2=0`), so the long circuits are allowed to run.
+
+Summary file: `results/sweeps/20261024-165743_baseline.json`
+
+![Baseline sweep](results/sweeps/20261024-165743_baseline.png)
+
+| Rounds | Z: \(P_\text{error}\) decoded | Z: no correction | X: \(P_\text{error}\) decoded | X: no correction |
+|---|---|---|---|---|
+| 1 | 0.083 ± 0.004 | 0.271 | 0.070 ± 0.004 | 0.222 |
+| 2 | 0.145 ± 0.005 | 0.347 | 0.147 ± 0.005 | 0.331 |
+| 3 | 0.211 ± 0.006 | 0.412 | 0.217 ± 0.006 | 0.386 |
+| 4 | 0.264 ± 0.006 | 0.436 | 0.262 ± 0.006 | 0.427 |
+| 6 | 0.349 ± 0.007 | 0.480 | 0.336 ± 0.007 | 0.464 |
+| 8 | 0.401 ± 0.007 | 0.481 | 0.397 ± 0.007 | 0.475 |
+
+| Fit | Z | X |
+|---|---|---|
+| **README fit** \(2P = 1-(1-2\varepsilon_L)^n\) | **0.0855 ± 0.0012** | **0.0833 ± 0.0012** |
+| With a one-off amplitude, \(2P = 1-A(1-2\varepsilon_L)^n\) | 0.0892 ± 0.0021 (A = 1.03) | 0.0905 ± 0.0021 (A = 1.05) |
+
+**How to read it:**
+
+- **Dots** are measured \(P_\text{error}\) after decoding; **crosses** are
+  with no correction; **lines** are the fits. The dots sit on the lines, so
+  the model describes the data well.
+- **Decoding helps at every round count.** The crosses reach about 0.48
+  (essentially random) by 6 rounds, while decoded results are still at 0.35.
+- **\(\varepsilon_L\) ≈ 8.5% per round** means each extra round adds roughly
+  8.5% chance of losing the logical value, until it saturates at 50%.
+- **Z and X are almost equal.** Phase errors are not hurting X memory more
+  than bit errors hurt Z, even though T2 is shorter than T1. Idle phase loss
+  on data qubits hits **both** bases, because a Z-memory data qubit spends
+  half its time in the X frame (the frame trick).
+- **Is this good or bad?** With about 1.2 expected faults per round on the
+  patch (section 5.2), two faults in a round are common, and d=3 can only fix
+  one. So \(\varepsilon_L\) stays high. That's normal on today's hardware.
+  The challenge is about measuring \(\varepsilon_L\) honestly and lowering it,
+  and every fault you remove from the budget should show up as a lower
+  \(\varepsilon_L\).
+- **The ± values** come from the fit and assume the model is exact. Treat
+  them as a lower bound on the uncertainty.
 
 ---
 
@@ -506,27 +581,107 @@ JSON are **identical** to the dashboard download in `results/dashboard/`.
 |---|---|---|---|
 | Correctness | 30% | Self-test: zero noiseless alarms, distance 3, both bases, no-reset algebra proven; hardware decoding beats no decoding | Run X memory on hardware |
 | Hardware fit / SWAPs | 30% | Exhaustive search shows Garnet's only fitting set; `fixed_layout` refuses any non-native CZ; 24 CZ per round, one PRX per single-qubit gate | Present this clearly in the submission |
-| LER statistics | 20% | Pipeline and saving work | Round sweep and fit with error bars |
+| LER statistics | 20% | Baseline sweep in Z and X with fitted \(\varepsilon_L\) and error bars (section 7.2) | Improvements measured against it; maybe more shots or round counts |
 | Flexibility | 20% | Z/X, reset/no-reset, any distance, noise dict, idle delays, compilation options hook, offline calibration | Calibration-weighted decoder, dynamical decoupling and heralding comparison, pulse-level work if PulLA is enabled |
 
 ---
 
-## 9. What to do next (in order)
+## 9. For teammates: how to add a technique and prove it helps
 
-1. **Round sweep:** rounds 1, 2, 3, 4, 6, 8 in Z and X, about 5,000 shots
-   each (12 circuits). Fit \(\varepsilon_L\). This is the 20% statistics
-   score.
-2. **Dynamical decoupling and heralding:** same sweep with
-   `compilation_options=CircuitCompilationOptions(dd_mode=DDMode.ENABLED, ...)`.
-   The idle term is 68% of the budget, and echo T2 is about twice Ramsey T2.
-   Using echo T2 in our estimate drops idle faults from about 0.85 to about
-   0.35 per round. Measuring that improvement is exactly the "identify what
-   limits the LER" bonus.
-3. **Calibration-weighted decoder:** build the `noise` argument from the
-   per-qubit numbers saved in each run's JSON, so the decoder knows QB2 and
-   QB6 are unreliable. Compare against uniform weights on the **same shots**.
-4. **Idle-time sweep** with `idle_time` (needs pulse-level access): how fast
-   does logical error grow with waiting?
+### 9.1 Start
+
+```bash
+git fetch origin
+git switch build-1-qrisp-surface-code
+git switch -c <your-name>/<technique>      # e.g. alex/dynamical-decoupling
+python check_surface_code.py               # make sure everything still passes
+```
+
+### 9.2 Decide which kind of technique it is
+
+**Kind A: decoder ideas. Free, no hardware.** Anything that only changes how
+we interpret shots we already have: decoder weights, a different decoder, or
+handling leakage or bad readouts. Because you re-decode the **same** shots, any
+change in \(\varepsilon_L\) is caused by your idea alone.
+
+1. Write a function in `decoders.py`:
+   `def my_idea(syndromes) -> (logical_error, sigma)`.
+   The docstring at the top of that file lists everything inside `syndromes`,
+   including the per-qubit calibration.
+2. Re-decode the baseline:
+   ```bash
+   python sweep.py --load results/sweeps/20261024-165743_baseline.json --decoder decoders:my_idea
+   ```
+3. Compare:
+   ```bash
+   python sweep.py --compare results/sweeps/20261024-165743_baseline.json results/sweeps/<new>.json
+   ```
+
+**Kind B: hardware or circuit ideas. Costs credits.** Anything that changes
+what runs on the chip: dynamical decoupling, heralding, a different CZ order,
+fewer pulses, a different readout mode.
+
+1. Make the change:
+   - For compile options, flags already exist: `--dd` and `--herald`.
+   - Add new options in `sweep.py` where `CircuitCompilationOptions` is built.
+   - Circuit changes go in `make_qrisp_experiment`. Run
+     `python check_surface_code.py` afterwards, because a circuit change can
+     silently break correctness.
+2. Check it compiles, for free: `python sweep.py --dry-run`
+3. **Run a fresh baseline and your change back to back**, so both use the same
+   calibration:
+   ```bash
+   python sweep.py --label baseline
+   python sweep.py --label my_idea --dd        # or your change
+   python sweep.py --compare results/sweeps/<baseline>.json results/sweeps/<my_idea>.json
+   ```
+   `--compare` warns you if the two sweeps ran on different calibration sets.
+   In that case part of the difference may be the chip drifting.
+
+### 9.3 Reading `--compare`
+
+```
+eps_L[Z]: A 0.0855 ± 0.0012   B 0.0880 ± 0.0013   B - A = +0.0024 (+1.4 sigma, +2.9%)
+```
+
+- **B − A negative** means your idea lowered \(\varepsilon_L\), which is good.
+- **Sigma** is the difference divided by the combined uncertainty. Beyond
+  about 2 the effect is probably real; below about 1 it's noise.
+- For Kind A on the same shots, the printed sigma is **conservative**. The
+  real uncertainty of the difference is smaller, because both share the same
+  shot noise.
+
+### 9.4 Results so far
+
+| Idea | Kind | Sweep file | \(\varepsilon_L\) Z | \(\varepsilon_L\) X | Verdict |
+|---|---|---|---|---|---|
+| Baseline | n/a | `20261024-165743_baseline.json` | 0.0855 ± 0.0012 | 0.0833 ± 0.0012 | Reference |
+| Uniform Garnet-like decoder weights (`decoders:garnet_uniform`) | A | `20261024-165945_baseline_garnet_uniform.json` | 0.0880 | 0.0880 | **Worse**; blanket weights mislead the decoder |
+
+Add a row for every idea you test, including the ones that fail. Failures are
+evidence for the "what limits the logical error rate" bonus.
+
+### 9.5 Ideas worth trying, roughly in order of expected payoff
+
+1. **Dynamical decoupling (B):** `--dd`. Idle phase loss is about 68% of the
+   estimated fault budget, and echo T2 is about twice Ramsey T2. Our estimate
+   drops idle faults from about 0.85 to about 0.35 per round.
+2. **Per-qubit decoder weights (A):** build a detector error model from
+   `syndromes["calibration"]` so the decoder knows QB2 and QB6 are unreliable.
+   The blanket version failed, which makes the per-qubit version the
+   interesting test.
+3. **Heralding (B):** `--herald`. It discards shots that didn't start in 0.
+   Check `shots_returned` in the run files to see how many survive.
+4. **High-fidelity final readout (B):** IQM's `measure_fidelity` mode for the
+   final **data** readout only. Ancillas should stay on `measure`, which is
+   tuned not to disturb the qubit, and that matters because we never reset.
+   It halves QB2's readout error (5.2% → 2.6%). First check whether
+   Qrisp/IQM lets you choose the mode per measurement.
+5. **Leakage-aware decoding (A):** QB2 and QB6 leak 8–11% on readout. Shots
+   where their measurements look implausible could be down-weighted.
+6. **Idle-time sweep (B, needs pulse access):** the `idle_time` argument adds
+   a controlled wait. Measuring how fast \(\varepsilon_L\) grows with waiting
+   directly measures how much idling hurts.
 
 ---
 
@@ -535,8 +690,13 @@ JSON are **identical** to the dashboard download in `results/dashboard/`.
 - The **error budget is an estimate**: it adds probabilities, and it uses an
   assumed 1.5 µs readout time. It ranks causes; it doesn't predict the exact
   logical error.
-- The decoder currently uses **uniform** noise weights (`DEFAULT_NOISE`,
-  0.3%). That works, but calibrated weights should do better.
+- The baseline decoder uses **uniform** noise weights (`DEFAULT_NOISE`,
+  0.3%). Blanket Garnet-like weights did worse (section 9.4); per-qubit
+  weights are untested.
+- The \(\varepsilon_L\) **error bars come from the fit** and assume the model
+  is exact. Treat them as a lower bound.
+- **Comparing hardware runs from different calibration sets** mixes your
+  change with chip drift. Re-run the baseline in the same session.
 - The first run's saved `budget_per_round` (in its JSON) was computed with the
   old readout metric (total 1.17). The corrected value is 1.24. The raw data
   is unaffected.

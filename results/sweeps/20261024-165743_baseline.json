@@ -1,0 +1,146 @@
+{
+ "points": [
+  {
+   "basis": "Z",
+   "rounds": 1,
+   "shots": 5000,
+   "p_error": 0.0834,
+   "sigma": 0.00391010076596499,
+   "undecoded": 0.2706,
+   "detector_rate": 0.11645,
+   "run_file": "results/20261024-165725_garnet_d3_r1_Z_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 2,
+   "shots": 5000,
+   "p_error": 0.1452,
+   "sigma": 0.004982307898956065,
+   "undecoded": 0.347,
+   "detector_rate": 0.152675,
+   "run_file": "results/20261024-165725_garnet_d3_r2_Z_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 3,
+   "shots": 5000,
+   "p_error": 0.211,
+   "sigma": 0.005770251294354519,
+   "undecoded": 0.4116,
+   "detector_rate": 0.16971666666666665,
+   "run_file": "results/20261024-165725_garnet_d3_r3_Z_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 4,
+   "shots": 5000,
+   "p_error": 0.2642,
+   "sigma": 0.006235356605680223,
+   "undecoded": 0.436,
+   "detector_rate": 0.18479375,
+   "run_file": "results/20261024-165725_garnet_d3_r4_Z_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 6,
+   "shots": 5000,
+   "p_error": 0.3488,
+   "sigma": 0.00674000830860022,
+   "undecoded": 0.4802,
+   "detector_rate": 0.2031625,
+   "run_file": "results/20261024-165725_garnet_d3_r6_Z_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 8,
+   "shots": 5000,
+   "p_error": 0.4012,
+   "sigma": 0.006931645692041681,
+   "undecoded": 0.4812,
+   "detector_rate": 0.213853125,
+   "run_file": "results/20261024-165725_garnet_d3_r8_Z_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 1,
+   "shots": 5000,
+   "p_error": 0.0696,
+   "sigma": 0.003598773124274438,
+   "undecoded": 0.2216,
+   "detector_rate": 0.12615,
+   "run_file": "results/20261024-165725_garnet_d3_r1_X_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 2,
+   "shots": 5000,
+   "p_error": 0.147,
+   "sigma": 0.005007813894305578,
+   "undecoded": 0.3306,
+   "detector_rate": 0.1578625,
+   "run_file": "results/20261024-165725_garnet_d3_r2_X_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 3,
+   "shots": 5000,
+   "p_error": 0.2174,
+   "sigma": 0.00583330506659818,
+   "undecoded": 0.3864,
+   "detector_rate": 0.17641666666666667,
+   "run_file": "results/20261024-165725_garnet_d3_r3_X_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 4,
+   "shots": 5000,
+   "p_error": 0.2618,
+   "sigma": 0.006217085490806766,
+   "undecoded": 0.4266,
+   "detector_rate": 0.191125,
+   "run_file": "results/20261024-165725_garnet_d3_r4_X_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 6,
+   "shots": 5000,
+   "p_error": 0.3358,
+   "sigma": 0.006678897513811692,
+   "undecoded": 0.4644,
+   "detector_rate": 0.209025,
+   "run_file": "results/20261024-165725_garnet_d3_r6_X_baseline_01a16fb3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 8,
+   "shots": 5000,
+   "p_error": 0.3972,
+   "sigma": 0.006920002312138343,
+   "undecoded": 0.4746,
+   "detector_rate": 0.22141875,
+   "run_file": "results/20261024-165725_garnet_d3_r8_X_baseline_01a16fb3.json"
+  }
+ ],
+ "fits": {
+  "X": {
+   "eps_L": 0.08326029305025437,
+   "eps_L_sigma": 0.0012044216793611043,
+   "eps_L_amp": 0.09053231148696667,
+   "eps_L_amp_sigma": 0.0020784561716614544,
+   "amp": 1.0502232300676935,
+   "amp_sigma": 0.01166491564542751
+  },
+  "Z": {
+   "eps_L": 0.08553633857139586,
+   "eps_L_sigma": 0.0012356443146932048,
+   "eps_L_amp": 0.08917057548436885,
+   "eps_L_amp_sigma": 0.0021481885677644107,
+   "amp": 1.0256122070687224,
+   "amp_sigma": 0.012263529244076166
+  }
+ },
+ "label": "baseline",
+ "job_id": "01a16fb3-d7b9-7189-9d03-7c094f8313de",
+ "calibration_set_id": "a18a947f-0408-4628-81ea-1715637e434f",
+ "compilation_options": "CircuitCompilationOptions(max_circuit_duration_over_t2=0.0, heralding_mode=<HeraldingMode.NONE: 'none'>, move_gate_validation=<MoveGateValidationMode.STRICT: 'strict'>, move_gate_frame_tracking=<MoveGateFrameTrackingMode.FULL: 'full'>, active_reset_cycles=None, dd_mode=<DDMode.DISABLED: 'disabled'>, dd_strategy=None)"
+}

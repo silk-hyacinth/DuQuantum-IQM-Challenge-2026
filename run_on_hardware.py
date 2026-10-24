@@ -100,56 +100,68 @@ def run_qiskit(
 
 
 
-def run_qrisp(
-    distance: int    = 3,
-    rounds: int      = 1,
+def _load_credentials(token: str = None) -> None:
+    """Put the IQM token into the environment (from `token`, TOKEN, or the local .env)."""
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    if token or TOKEN:
+        os.environ["IQM_TOKEN"] = token or TOKEN
+    if not os.environ.get("IQM_TOKEN"):
+        raise RuntimeError("no IQM token: set IQM_TOKEN in .env or pass token=")
+
+
+def run_qrisp_batch(
+    configs: list,
     shots: int       = 5_000,
     token: str       = None,
     quantum_computer: str = "garnet",
-    no_reset: bool   = True,
-    basis: str       = "Z",
-    idle_time: float = 0.0,
     compilation_options = None,
     save_dir: str    = "results",
     dry_run: bool    = False,
-) -> dict:
+    label: str       = "",
+) -> list:
     """
-    Run the surface code memory experiment on real IQM hardware (Qrisp track).
+    Run several surface code experiments as ONE hardware job (Qrisp track).
+
+    Why one job: every circuit in a job runs back to back on the same
+    calibration, so a round sweep compares like with like, and we only wait in
+    the queue once. Resonance allows up to 100 circuits per job.
 
     What happens, step by step
     --------------------------
-      1. Build the circuit with make_qrisp_experiment (surface_code.py).
+      1. Build each circuit with make_qrisp_experiment (surface_code.py).
       2. Read today's calibration and pick the best zero-SWAP placement
-         (garnet_layout.py). On Garnet there is only one possible qubit set.
-      3. Compile: pin the circuit onto those physical qubits (and prove every
+         (garnet_layout.py). On Garnet there is only one possible qubit set,
+         and every config uses the same one.
+      3. Compile: pin each circuit onto those physical qubits (and prove every
          CZ is on a real coupler), then turn each SQRT_Y gate into one PRX pulse.
-      4. Submit to IQM Resonance and wait. The hardware returns "counts": for
-         each 17-bit (or longer) string of measurement results, how many shots
-         produced it.
+      4. Submit all circuits in one job and wait. For each circuit the hardware
+         returns "counts": how many shots produced each measurement bitstring.
       5. Convert each bitstring into detection events and the observable flip,
          using the post-processing Qrisp generated from our parity() calls.
-      6. Save everything to results/ so the run can be re-analysed later.
+      6. Save each circuit's run to results/ so it can be re-analysed later.
 
     Inputs
     ------
-    distance            : code distance (3 is the only one that fits Garnet)
-    rounds              : stabilizer rounds; sweep this to get the per-round rate
-    shots               : repetitions of the circuit (Resonance max 20 000)
+    configs             : list of dicts, one per circuit, with keys
+                            rounds (required), basis ("Z"/"X", default "Z"),
+                            distance (3), no_reset (True), idle_time (0.0)
+    shots               : repetitions per circuit (Resonance max 20 000)
     token               : API token; normally leave None and keep it in .env
     quantum_computer    : "garnet"
-    no_reset            : True on hardware (no mid-circuit reset available)
-    basis               : "Z" protects a bit value, "X" protects a phase
-    idle_time           : extra wait (seconds) on ancillas between rounds;
-                          nonzero adds iqm.delay ops, which need pulse-level access
     compilation_options : iqm.iqm_client.CircuitCompilationOptions, e.g. to turn
                           on dynamical decoupling or heralding. None = IQM defaults.
-    save_dir            : where to save the run (None = don't save)
+    save_dir            : where to save the runs (None = don't save)
     dry_run             : do steps 1-3 and print the compiled gate counts,
                           but do not submit (costs nothing)
+    label               : short tag stored with each run and put in file names,
+                          e.g. "baseline" or "dd"
 
     Output
     ------
-    dict with
+    list of dicts (same order as configs), each with
       det_events : bool array (shots, n_detectors). True = that alarm fired.
       obs_flips  : bool array (shots, 1). True = the logical value came out
                    flipped before any correction.
@@ -159,7 +171,6 @@ def run_qrisp(
     import json
     import os
     import time
-    from dotenv import load_dotenv
     from iqm.qrisp_iqm import IQMBackend
     from iqm.qrisp_iqm.iqm_converter import qrisp_to_iqm_converter
     from jax import jit as jax_jit
@@ -167,28 +178,30 @@ def run_qrisp(
     from qrisp.jasp import make_jaspr
     from garnet_layout import fetch_calibration, fixed_layout, rank_placements
 
-    # Credentials: .env holds IQM_TOKEN, IQM_SERVER_URL, IQM_QUANTUM_COMPUTER.
-    load_dotenv()
-    if token or TOKEN:
-        os.environ["IQM_TOKEN"] = token or TOKEN
-    if not os.environ.get("IQM_TOKEN"):
-        raise RuntimeError("no IQM token: set IQM_TOKEN in .env or pass token=")
+    _load_credentials(token)
     if shots > 20_000:
         raise ValueError("Resonance allows at most 20 000 shots per circuit")
+    if not 1 <= len(configs) <= 100:
+        raise ValueError("a job holds between 1 and 100 circuits")
 
-    # Step 1. Build the experiment WITHOUT noise annotations (hardware supplies
-    # the real noise). Tracing it ("make_jaspr") gives:
+    # Step 1. Build every experiment WITHOUT noise annotations (hardware
+    # supplies the real noise). Tracing it ("make_jaspr") gives:
     #   qc              : the plain quantum circuit to send to the chip
     #   post_processing : a compiled function bits -> (detectors..., observable)
-    experiment = make_qrisp_experiment(distance, rounds, basis=basis, no_reset=no_reset,
-                                       idle_time=idle_time)
-    jaspr = make_jaspr(experiment._func)()
-    qc = jaspr.to_qc()[-1]
-    post_processing = jax_jit(jaspr.extract_post_processing())
+    prepared = []
+    for cfg in configs:
+        cfg = {"distance": 3, "basis": "Z", "no_reset": True, "idle_time": 0.0, **cfg}
+        experiment = make_qrisp_experiment(cfg["distance"], cfg["rounds"], basis=cfg["basis"],
+                                           no_reset=cfg["no_reset"], idle_time=cfg["idle_time"])
+        jaspr = make_jaspr(experiment._func)()
+        prepared.append((cfg, experiment, jaspr.to_qc()[-1], jax_jit(jaspr.extract_post_processing())))
 
     # Step 2. Calibration-ranked placement (index 0 = lowest expected faults).
+    # All configs share a distance, hence a layout, hence one placement.
+    if len({cfg["distance"] for cfg, *_ in prepared}) != 1:
+        raise ValueError("all configs in one batch must use the same distance")
     cal = fetch_calibration(quantum_computer=quantum_computer)
-    best = rank_placements(experiment.layout, cal)[0]
+    best = rank_placements(prepared[0][1].layout, cal)[0]
 
     # Step 3. An EMPTY PassManager means "do not let IQM's default compiler
     # re-route or re-place anything". We add exactly two passes:
@@ -203,68 +216,125 @@ def run_qrisp(
     backend.pm += fixed_layout(best.placement, backend._dqa.qubits, backend.connectivity)
     backend.pm += convert_to_prx
 
-    # Compile once locally just to count what will run (and catch errors early).
-    native = backend.pm.run(qc)
-    iqm_circuit = qrisp_to_iqm_converter(native, backend._dqa)
-    op_counts = {}
-    for op in iqm_circuit.instructions:
-        op_counts[op.name] = op_counts.get(op.name, 0) + 1
-
-    # Everything needed to reproduce / re-decode this run later. The per-qubit
-    # calibration of the qubits we used is saved too, so drift between runs
-    # can be compared.
+    # Everything needed to reproduce / re-decode a run later, shared by the
+    # whole batch. The per-qubit calibration of the qubits we used is saved
+    # too, so drift between runs can be compared.
     used = set(best.qubits)
-    meta = {
+    shared = {
+        "label": label,
         "quantum_computer": quantum_computer,
         "calibration_set_id": str(backend._calibration_set_id),
-        "distance": distance, "rounds": rounds, "basis": basis,
-        "no_reset": no_reset, "idle_time": idle_time, "shots": shots,
+        "shots": shots,
+        "compilation_options": repr(compilation_options),
         "placement": {str(i): q for i, q in sorted(best.placement.items())},
         "budget_per_round": best.budget,
-        "native_ops": op_counts,
         "calibration": {
             key: {q: v for q, v in cal[key].items() if q in used}
             for key in ("prx", "readout", "e01", "e10", "leakage", "t1", "t2", "t2_echo")
         } | {"cz": {"__".join(sorted(p)): e for p, e in cal["cz"].items() if p <= used}},
     }
     print(f"placement on {quantum_computer}: {best.qubits}")
-    print(f"native ops: {op_counts}  (no swap/move ops: every CZ is a native coupler)")
+
+    # Compile each circuit once locally to count what will run (and catch
+    # errors before spending credits).
+    metas = []
+    for cfg, _, qc, _ in prepared:
+        iqm_circuit = qrisp_to_iqm_converter(backend.pm.run(qc), backend._dqa)
+        op_counts = {}
+        for op in iqm_circuit.instructions:
+            op_counts[op.name] = op_counts.get(op.name, 0) + 1
+        metas.append({**shared, **cfg, "native_ops": op_counts})
+        print(f"  d={cfg['distance']} r={cfg['rounds']:<2} {cfg['basis']}: {op_counts}")
+    print("no swap/move ops: every CZ is a native coupler")
     if dry_run:
-        return {"det_events": None, "obs_flips": None, **meta}
+        return [{"det_events": None, "obs_flips": None, **m} for m in metas]
 
-    # Step 4. Submit and wait. counts = {"0110...": how many shots gave this}.
-    job = backend.run_async(qc, shots)
-    print(f"submitted job {job.job_id}; waiting for results ...")
-    counts = job.result().all_counts[0]
-    meta["job_id"] = str(job.job_id)
+    # Step 4. Submit all circuits as one job and wait.
+    job = backend.run_async([qc for _, _, qc, _ in prepared], shots)
+    print(f"submitted job {job.job_id} ({len(prepared)} circuits x {shots} shots); waiting ...")
+    all_counts = job.result().all_counts
 
-    # Step 5. Each distinct bitstring is post-processed once, then repeated
-    # `count` times, giving one row per shot. The last output of
-    # post_processing is the observable; everything before it is a detector,
-    # in the same order make_qrisp_experiment returned them.
-    det_rows, obs_rows, weights = [], [], []
-    for bitstring, count in counts.items():
-        out = np.asarray(post_processing(np.array([c == "1" for c in bitstring])), dtype=bool)
-        det_rows.append(out[:-1])
-        obs_rows.append(out[-1:])
-        weights.append(count)
-    det_events = np.repeat(np.array(det_rows), weights, axis=0)
-    obs_flips = np.repeat(np.array(obs_rows), weights, axis=0)
-    meta["shots_returned"] = int(det_events.shape[0])
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    results = []
+    for (cfg, _, _, post_processing), meta, counts in zip(prepared, metas, all_counts):
+        meta["job_id"] = str(job.job_id)
 
-    # Step 6. Save: .npz = the arrays, .json = metadata + raw counts. The raw
-    # counts are identical to what the Resonance dashboard shows for the job.
+        # Step 5. Each distinct bitstring is post-processed once, then repeated
+        # `count` times, giving one row per shot. The last output of
+        # post_processing is the observable; everything before it is a
+        # detector, in the same order make_qrisp_experiment returned them.
+        det_rows, obs_rows, weights = [], [], []
+        for bitstring, count in counts.items():
+            out = np.asarray(post_processing(np.array([c == "1" for c in bitstring])), dtype=bool)
+            det_rows.append(out[:-1])
+            obs_rows.append(out[-1:])
+            weights.append(count)
+        det_events = np.repeat(np.array(det_rows), weights, axis=0)
+        obs_flips = np.repeat(np.array(obs_rows), weights, axis=0)
+        meta["shots_returned"] = int(det_events.shape[0])
+
+        # Step 6. Save: .npz = the arrays, .json = metadata + raw counts. The
+        # raw counts are identical to what the Resonance dashboard shows.
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            stem = (f"{stamp}_{quantum_computer}_d{cfg['distance']}_r{cfg['rounds']}_{cfg['basis']}"
+                    f"{'_' + label if label else ''}_{meta['job_id'][:8]}")
+            np.savez_compressed(os.path.join(save_dir, stem + ".npz"),
+                                det_events=det_events, obs_flips=obs_flips)
+            with open(os.path.join(save_dir, stem + ".json"), "w") as f:
+                json.dump({**meta, "counts": counts}, f, indent=1)
+            meta["saved_as"] = os.path.join(save_dir, stem + ".json")
+
+        results.append({"det_events": det_events, "obs_flips": obs_flips, **meta})
     if save_dir:
-        os.makedirs(save_dir, exist_ok=True)
-        stem = (f"{time.strftime('%Y%m%d-%H%M%S')}_{quantum_computer}_d{distance}"
-                f"_r{rounds}_{basis}_{meta['job_id'][:8]}")
-        np.savez_compressed(os.path.join(save_dir, stem + ".npz"),
-                            det_events=det_events, obs_flips=obs_flips)
-        with open(os.path.join(save_dir, stem + ".json"), "w") as f:
-            json.dump({**meta, "counts": counts}, f, indent=1)
-        print(f"saved {save_dir}/{stem}.npz and .json")
+        print(f"saved {len(results)} runs to {save_dir}/{stamp}_*")
+    return results
 
-    return {"det_events": det_events, "obs_flips": obs_flips, **meta}
+
+def run_qrisp(
+    distance: int    = 3,
+    rounds: int      = 1,
+    shots: int       = 5_000,
+    token: str       = None,
+    quantum_computer: str = "garnet",
+    no_reset: bool   = True,
+    basis: str       = "Z",
+    idle_time: float = 0.0,
+    compilation_options = None,
+    save_dir: str    = "results",
+    dry_run: bool    = False,
+) -> dict:
+    """
+    Run ONE surface code memory experiment on real IQM hardware (Qrisp track).
+
+    This is run_qrisp_batch with a single circuit; see that function for the
+    step-by-step description.
+
+    Inputs
+    ------
+    distance            : code distance (3 is the only one that fits Garnet)
+    rounds              : stabilizer rounds; sweep this to get the per-round rate
+    shots               : repetitions of the circuit (Resonance max 20 000)
+    token               : API token; normally leave None and keep it in .env
+    quantum_computer    : "garnet"
+    no_reset            : True on hardware (no mid-circuit reset available)
+    basis               : "Z" protects a bit value, "X" protects a phase
+    idle_time           : extra wait (seconds) on ancillas between rounds;
+                          nonzero adds iqm.delay ops, which need pulse-level access
+    compilation_options : iqm.iqm_client.CircuitCompilationOptions or None
+    save_dir            : where to save the run (None = don't save)
+    dry_run             : compile and print gate counts, but do not submit
+
+    Output
+    ------
+    dict with det_events (shots, n_detectors), obs_flips (shots, 1) and the
+    run metadata decode_hardware_results() needs.
+    """
+    config = {"distance": distance, "rounds": rounds, "basis": basis,
+              "no_reset": no_reset, "idle_time": idle_time}
+    return run_qrisp_batch([config], shots=shots, token=token, quantum_computer=quantum_computer,
+                           compilation_options=compilation_options, save_dir=save_dir,
+                           dry_run=dry_run)[0]
 
 
 def load_hardware_results(path: str) -> dict:
@@ -336,7 +406,7 @@ def decode_hardware_results(
     return ler, err
 
 
-def summarize_hardware_results(syndromes: dict, noise=None) -> dict:
+def summarize_hardware_results(syndromes: dict, noise=None, decoder=None) -> dict:
     """The numbers to look at after every run.
 
     logical_error           : P_error after decoding (lower is better)
@@ -349,8 +419,12 @@ def summarize_hardware_results(syndromes: dict, noise=None) -> dict:
                               code is overwhelmed.
     detector_rates          : the same per detector, in experiment order. Map a
                               high one back to its qubits to find the culprit.
+
+    decoder : optional replacement for decode_hardware_results, any function
+              f(syndromes) -> (ler, err). This is the hook for trying a new
+              decoder on saved data without spending credits.
     """
-    ler, err = decode_hardware_results(syndromes, noise)
+    ler, err = decoder(syndromes) if decoder else decode_hardware_results(syndromes, noise)
     det = np.asarray(syndromes["det_events"], dtype=bool)
     obs = np.asarray(syndromes["obs_flips"], dtype=bool)
     return {
