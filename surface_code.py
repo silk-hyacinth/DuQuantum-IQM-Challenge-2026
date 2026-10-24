@@ -83,8 +83,8 @@ def make_stim_circuit(
     ----------
     distance : code distance
     rounds   : number of stabilizer rounds
-    basis    : "Z" or "X" memory experiment NOTE: Stim's X-memory circuits use RX / MX,
-             which the provided converters do not handle. Possible avenue for extension.
+    basis    : "Z" or "X" memory experiment. X-memory stores |+>_L and prepares / reads out the
+             data qubits with RX / MX (handled in stim_to_qiskit.py: RX = reset + H, MX = H + measure).
     no_reset : True -> ancillas are measured without reset (required on Emerald)
     noise    : None for the hardware circuit. For for simulation / DEM it can be  e.g. DEFAULT_NOISE or sophisticated choices.
 
@@ -100,7 +100,10 @@ def make_stim_circuit(
     -------
     stim.Circuit
     """
-    circ = stim.Circuit.generated("surface_code:rotated_memory_z",
+    if basis not in ("Z", "X"):
+        raise ValueError("basis must be 'Z' or 'X'")
+
+    circ = stim.Circuit.generated(f"surface_code:rotated_memory_{basis.lower()}",
                                   distance=distance, rounds=rounds, **(noise or {}))
     if not no_reset:
         return circ
@@ -112,13 +115,14 @@ def make_stim_circuit(
     for inst in circ.flattened():
         assert isinstance(inst, stim.CircuitInstruction)
         
-        if inst.name in ("M", "MR"):
+        if inst.name in ("M", "MR", "MX"):    # MX = final data readout in an X-memory
             for t in inst.targets_copy():       # each qubit being measured
                 if inst.name == "MR":           
                     prev[n] = last.get(t.value) # remember: measurement #n's previous reading was #last[q]
                 last[t.value] = n               # this qubit's latest measurement is now #n
                 n += 1
-            inst = stim.CircuitInstruction("M", inst.targets_copy(), inst.gate_args_copy())   # change MR → M (no reset)
+            if inst.name == "MR":
+                inst = stim.CircuitInstruction("M", inst.targets_copy(), inst.gate_args_copy())   # change MR → M (no reset)
         # above: lookup table for each measurement
         
         elif inst.name in ("DETECTOR", "OBSERVABLE_INCLUDE"):

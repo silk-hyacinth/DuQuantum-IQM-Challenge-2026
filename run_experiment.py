@@ -53,6 +53,8 @@ def main():
     ap.add_argument("--rounds", type=int, nargs="+", default=[1, 2, 3, 4, 5])
     ap.add_argument("--shots", type=int, default=2000)
     ap.add_argument("--dd", action="store_true", help="enable dynamical decoupling (hardware only)")
+    ap.add_argument("--basis", default="Z", choices=["Z", "X"],
+                    help="Z-memory (bit-flip protection) or X-memory (phase-flip protection)")
     ap.add_argument("--tag", default="", help="extra label for the output file name")
     args = ap.parse_args()
 
@@ -64,7 +66,7 @@ def main():
     target = "fakegarnet" if args.fake else args.qc
 
     os.makedirs("results", exist_ok=True)
-    name = f"{target}_d{args.distance}{'_dd' if args.dd else ''}{'_' + args.tag if args.tag else ''}" \
+    name = f"{target}_d{args.distance}{'_X' if args.basis == 'X' else ''}{'_dd' if args.dd else ''}{'_' + args.tag if args.tag else ''}" \
            f"_{datetime.now():%Y%m%d_%H%M%S}"
     json_path = f"results/{name}.json"
 
@@ -74,7 +76,7 @@ def main():
         json.dump(calibration, f, indent=1)
     print(f"  Saved calibration snapshot to results/{name}_calibration.json")
 
-    record = dict(target=target, distance=args.distance, shots=args.shots, dd=args.dd,
+    record = dict(target=target, distance=args.distance, basis=args.basis, shots=args.shots, dd=args.dd,
                   started_at=datetime.now().isoformat(timespec="seconds"),
                   calibration_file=f"{name}_calibration.json",
                   status="in_progress", runs=[])
@@ -86,8 +88,8 @@ def main():
     save()
     for r in args.rounds:
         s = run_qiskit(distance=args.distance, rounds=r, shots=args.shots,
-                       quantum_computer=args.qc, backend=backend, dd=args.dd)
-        p, err = decode_hardware_results(s, args.distance, r)
+                       quantum_computer=args.qc, backend=backend, dd=args.dd, basis=args.basis)
+        p, err = decode_hardware_results(s, args.distance, r, basis=args.basis)
         undecoded = float(s["obs_flips"][:, 0].mean())
         print(f"  rounds={r}: P_error={p:.4f} ± {err:.4f}   (no correction: {undecoded:.3f})")
         record["runs"].append(dict(rounds=r, p_error=p, p_error_err=err, undecoded=undecoded,
@@ -111,7 +113,7 @@ def main():
 
     xs = np.linspace(0, max(R) + 0.5, 200)
     plt.figure(figsize=(6, 4))
-    plt.errorbar(R, P, yerr=E, fmt="o", capsize=3, label=f"{target}, d={args.distance}")
+    plt.errorbar(R, P, yerr=E, fmt="o", capsize=3, label=f"{target}, d={args.distance}, {args.basis}-memory")
     plt.plot(xs, p_error_model(xs, eps), "-",
              label=rf"fit: $\varepsilon_L$ = {eps:.4f} ± {eps_err:.4f}")
     plt.xlabel("rounds")

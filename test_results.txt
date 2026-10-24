@@ -1,0 +1,56 @@
+
+[1] Stim simulation, uniform noise 0.3%  (d=3, 20000 shots)
+  no_reset = False
+    rounds=1  P_error=0.0027 ± 0.0004   (no correction: 0.036)
+    rounds=2  P_error=0.0049 ± 0.0005   (no correction: 0.050)
+    rounds=3  P_error=0.0075 ± 0.0006   (no correction: 0.066)
+    rounds=5  P_error=0.0106 ± 0.0007   (no correction: 0.095)
+    rounds=8  P_error=0.0158 ± 0.0009   (no correction: 0.132)
+  no_reset = True
+    rounds=1  P_error=0.0022 ± 0.0003   (no correction: 0.035)
+    rounds=2  P_error=0.0040 ± 0.0004   (no correction: 0.053)
+    rounds=3  P_error=0.0065 ± 0.0006   (no correction: 0.065)
+    rounds=5  P_error=0.0103 ± 0.0007   (no correction: 0.094)
+    rounds=8  P_error=0.0160 ± 0.0009   (no correction: 0.132)
+
+[2] No-reset detector validity (Stim raises if any detector is non-deterministic)
+    Z-memory d=3 rounds=1: OK  (8 detectors, no MR)
+    Z-memory d=3 rounds=2: OK  (16 detectors, no MR)
+    Z-memory d=3 rounds=3: OK  (24 detectors, no MR)
+    Z-memory d=3 rounds=5: OK  (40 detectors, no MR)
+    Z-memory d=3 rounds=8: OK  (64 detectors, no MR)
+    Z-memory d=5 rounds=1: OK  (24 detectors, no MR)
+    Z-memory d=5 rounds=2: OK  (48 detectors, no MR)
+    Z-memory d=5 rounds=3: OK  (72 detectors, no MR)
+    Z-memory d=5 rounds=5: OK  (120 detectors, no MR)
+    Z-memory d=5 rounds=8: OK  (192 detectors, no MR)
+    X-memory d=3 rounds=1: OK  (8 detectors, no MR)
+    X-memory d=3 rounds=2: OK  (16 detectors, no MR)
+    X-memory d=3 rounds=3: OK  (24 detectors, no MR)
+    X-memory d=3 rounds=5: OK  (40 detectors, no MR)
+    X-memory d=3 rounds=8: OK  (64 detectors, no MR)
+    X-memory d=5 rounds=1: OK  (24 detectors, no MR)
+    X-memory d=5 rounds=2: OK  (48 detectors, no MR)
+    X-memory d=5 rounds=3: OK  (72 detectors, no MR)
+    X-memory d=5 rounds=5: OK  (120 detectors, no MR)
+    X-memory d=5 rounds=8: OK  (192 detectors, no MR)
+
+[3] Stim -> Qiskit conversion, noiseless Aer run (expect 0 detectors, 0 flips)
+    Z-memory rounds=1: detectors fired=0, logical flips=0  OK
+    Z-memory rounds=2: detectors fired=0, logical flips=0  OK
+    Z-memory rounds=3: detectors fired=0, logical flips=0  OK
+    X-memory rounds=1: detectors fired=0, logical flips=0  OK
+    X-memory rounds=2: detectors fired=0, logical flips=0  OK
+    X-memory rounds=3: detectors fired=0, logical flips=0  OK
+
+[4] Transpile onto IQM fake backends (each CX -> exactly 1 CZ means 0 SWAPs)
+    IQMFakeGarnetBackend (20q) d=3: CX=72 -> CZ=72, depth 25  => 0 SWAPs
+    IQMFakeAphroditeBackend (54q) d=3: CX=72 -> CZ=72, depth 25  => 0 SWAPs
+    IQMFakeAphroditeBackend (54q) d=5: CX=240 -> CZ=240, depth 27  => 0 SWAPs
+
+[5] Full pipeline on noisy fake Garnet (decoder uses uniform 0.3% noise guess)
+    rounds=1  P_error=0.029 ± 0.004   (no correction: 0.106)
+    rounds=2  P_error=0.055 ± 0.005   (no correction: 0.155)
+    rounds=3  P_error=0.082 ± 0.006   (no correction: 0.185)
+
+All tests passed.

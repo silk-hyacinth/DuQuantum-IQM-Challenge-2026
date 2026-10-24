@@ -96,6 +96,7 @@ def run_qiskit(
     backend          = None,
     initial_layout   = None,
     dd: bool         = False,
+    basis: str       = "Z",
 ) -> dict:
     """
     Runs the no-reset surface code via Qiskit and returns detection events.
@@ -112,6 +113,7 @@ def run_qiskit(
     initial_layout   : optional list of physical qubits (position i = physical qubit for circuit qubit i).
                        None -> the transpiler picks a SWAP-free placement itself.
     dd               : turn on IQM's dynamical decoupling (real hardware only)
+    basis            : "Z" (stores |0>_L, tests bit flips) or "X" (stores |+>_L, tests phase flips)
 
     Returns
     -------
@@ -125,14 +127,14 @@ def run_qiskit(
         backend = get_backend(quantum_computer, token)
 
     # 1. Circuit (Qiskit) + its Stim twin (defines the detectors for this exact circuit)
-    qc        = make_qiskit_circuit(distance, rounds, no_reset=no_reset)
-    stim_circ = make_stim_circuit(distance, rounds, no_reset=no_reset, noise=None)
+    qc        = make_qiskit_circuit(distance, rounds, basis=basis, no_reset=no_reset)
+    stim_circ = make_stim_circuit(distance, rounds, basis=basis, no_reset=no_reset, noise=None)
 
     # 2. Transpile: rewrite into the device's native gates (r, cz) and assign physical qubits
     qc_t = transpile(qc, backend, optimization_level=3, seed_transpiler=1,
                      initial_layout=initial_layout)
     n_cx, n_cz = qc.count_ops().get("cx", 0), qc_t.count_ops().get("cz", 0)
-    print(f"[run_qiskit] d={distance} rounds={rounds}: CX={n_cx} -> CZ={n_cz} "
+    print(f"[run_qiskit] d={distance} basis={basis} rounds={rounds}: CX={n_cx} -> CZ={n_cz} "
           f"({'0 SWAPs' if n_cx == n_cz else f'{(n_cz - n_cx) // 3} SWAPs!'}), depth {qc_t.depth()}")
 
     # 3. Run
@@ -219,6 +221,7 @@ def decode_hardware_results(
     distance: int,
     rounds: int,
     noise: Optional[dict] = None,
+    basis: str = "Z",
 ) -> tuple[float, float]:
     """
     Decodes the output of run_qiskit() (or run_qrisp()) with PyMatching.
@@ -232,7 +235,7 @@ def decode_hardware_results(
     p   : float  logical error probability for this round count
     err : float  1-sigma statistical error, sqrt(p(1-p)/shots)
     """
-    noisy   = make_stim_circuit(distance, rounds, no_reset=True, noise=noise or DEFAULT_NOISE)
+    noisy   = make_stim_circuit(distance, rounds, basis=basis, no_reset=True, noise=noise or DEFAULT_NOISE)
     dem     = noisy.detector_error_model(decompose_errors=True)
     matcher = pymatching.Matching.from_detector_error_model(dem)
 

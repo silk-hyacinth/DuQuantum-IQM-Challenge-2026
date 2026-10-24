@@ -30,10 +30,10 @@ from surface_code import make_stim_circuit, DEFAULT_NOISE
 from internal_helpers import counts_to_measurement_array, get_qubit_lists
 
 
-def hardware_detectors(run, distance):
+def hardware_detectors(run, distance, basis="Z"):
     R = run["rounds"]
     shots = sum(run["counts"].values())
-    sc = make_stim_circuit(distance, R, noise=None)
+    sc = make_stim_circuit(distance, R, basis=basis, noise=None)
     raw = counts_to_measurement_array(run["counts"], sc.num_measurements, shots)
     det, obs = sc.compile_m2d_converter().convert(measurements=raw, separate_observables=True)
     return sc, det, obs
@@ -52,8 +52,8 @@ def firing_table(sc, det):
     return rows
 
 
-def model(distance, R, kind, p):
-    c = make_stim_circuit(distance, R, noise=DEFAULT_NOISE)
+def model(distance, R, kind, p, basis="Z"):
+    c = make_stim_circuit(distance, R, basis=basis, noise=DEFAULT_NOISE)
     data, anc = get_qubit_lists(c)
     ms = [i for i, ins in enumerate(c) if ins.name == "M"]
     out = stim.Circuit()
@@ -95,14 +95,15 @@ def correlations(det, c):
 def main(path, model_rounds=3):
     r = json.load(open(path))
     d = r["distance"]
+    basis = r.get("basis", "Z")
     lines = []
     say = lambda s="": (print(s), lines.append(s))
 
-    say(f"Diagnosis of {os.path.basename(path)}  ({r['target']}, d={d}, {r['shots']} shots)")
+    say(f"Diagnosis of {os.path.basename(path)}  ({r['target']}, d={d}, {basis}-memory, {r['shots']} shots)")
     say("\n1. Detector firing rate per round (fraction of shots each check reported a change)")
     say("   round:  X-checks   Z-checks")
     for run in r["runs"]:
-        sc, det, obs = hardware_detectors(run, d)
+        sc, det, obs = hardware_detectors(run, d, basis)
         rows = firing_table(sc, det)
         say(f"  -- experiment with rounds={run['rounds']} (raw logical flip rate {obs[:, 0].mean():.3f})")
         for t in sorted(rows):
@@ -116,7 +117,7 @@ def main(path, model_rounds=3):
     if run is None or model_rounds < 3:
         say("\n(need a run with rounds>=3 for the correlation analysis)")
     else:
-        sc, det, _ = hardware_detectors(run, d)
+        sc, det, _ = hardware_detectors(run, d, basis)
         f, a, b, s = correlations(det, sc)
         say(f"\n2. Error-model comparison (rounds={model_rounds}); covariance between detector pairs")
         say(f"   {'':26}{'firing':>8}{'time dt=1':>11}{'time dt=2':>11}{'space':>9}")
@@ -124,7 +125,7 @@ def main(path, model_rounds=3):
         for kind in ("data_idle", "anc_flip", "readout"):
             best = None
             for p in np.linspace(0.0, 0.5, 26):
-                c = model(d, model_rounds, kind, p)
+                c = model(d, model_rounds, kind, p, basis)
                 dd, _ = c.compile_detector_sampler().sample(20000, separate_observables=True)
                 if best is None or abs(dd.mean() - f) < abs(best[1].mean() - f):
                     best = (p, dd, c)
