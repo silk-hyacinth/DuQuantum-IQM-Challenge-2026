@@ -12,7 +12,6 @@ import pymatching
 TOKEN = os.environ.get("IQM_TOKEN", "")   # set the IQM_TOKEN environment variable, or paste your token here
 SERVER_URL = "https://resonance.iqm.tech"
 
-
 def get_backend(quantum_computer: str = "garnet", token: str = None):
     """Connect to IQM Resonance and return the backend for `quantum_computer`."""
     from iqm.qiskit_iqm import IQMProvider
