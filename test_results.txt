@@ -1,17 +1,17 @@
 
 [1] Stim simulation, uniform noise 0.3%  (d=3, 20000 shots)
   no_reset = False
-    rounds=1  P_error=0.0027 ± 0.0004   (no correction: 0.036)
-    rounds=2  P_error=0.0049 ± 0.0005   (no correction: 0.050)
-    rounds=3  P_error=0.0075 ± 0.0006   (no correction: 0.066)
-    rounds=5  P_error=0.0106 ± 0.0007   (no correction: 0.095)
-    rounds=8  P_error=0.0158 ± 0.0009   (no correction: 0.132)
+    rounds=1  P_error=0.0030 ± 0.0004   (no correction: 0.034)
+    rounds=2  P_error=0.0042 ± 0.0005   (no correction: 0.051)
+    rounds=3  P_error=0.0066 ± 0.0006   (no correction: 0.065)
+    rounds=5  P_error=0.0108 ± 0.0007   (no correction: 0.092)
+    rounds=8  P_error=0.0177 ± 0.0009   (no correction: 0.134)
   no_reset = True
-    rounds=1  P_error=0.0022 ± 0.0003   (no correction: 0.035)
-    rounds=2  P_error=0.0040 ± 0.0004   (no correction: 0.053)
-    rounds=3  P_error=0.0065 ± 0.0006   (no correction: 0.065)
-    rounds=5  P_error=0.0103 ± 0.0007   (no correction: 0.094)
-    rounds=8  P_error=0.0160 ± 0.0009   (no correction: 0.132)
+    rounds=1  P_error=0.0026 ± 0.0004   (no correction: 0.036)
+    rounds=2  P_error=0.0054 ± 0.0005   (no correction: 0.049)
+    rounds=3  P_error=0.0066 ± 0.0006   (no correction: 0.063)
+    rounds=5  P_error=0.0093 ± 0.0007   (no correction: 0.094)
+    rounds=8  P_error=0.0154 ± 0.0009   (no correction: 0.129)
 
 [2] No-reset detector validity (Stim raises if any detector is non-deterministic)
     Z-memory d=3 rounds=1: OK  (8 detectors, no MR)
@@ -49,8 +49,22 @@
     IQMFakeAphroditeBackend (54q) d=5: CX=240 -> CZ=240, depth 27  => 0 SWAPs
 
 [5] Full pipeline on noisy fake Garnet (decoder uses uniform 0.3% noise guess)
-    rounds=1  P_error=0.029 ± 0.004   (no correction: 0.106)
-    rounds=2  P_error=0.055 ± 0.005   (no correction: 0.155)
-    rounds=3  P_error=0.082 ± 0.006   (no correction: 0.185)
+    rounds=1  P_error=0.024 ± 0.003   (no correction: 0.112)
+    rounds=2  P_error=0.057 ± 0.005   (no correction: 0.143)
+    rounds=3  P_error=0.074 ± 0.006   (no correction: 0.182)
+
+[6] Qrisp track, noiseless simulation (expect 0 detections, 0 flips)
+    Z-memory rounds=1: detectors fired=0, logical flips=0  OK
+    Z-memory rounds=2: detectors fired=0, logical flips=0  OK
+    X-memory rounds=1: detectors fired=0, logical flips=0  OK
+    X-memory rounds=2: detectors fired=0, logical flips=0  OK
+
+[7] Noise models x decoders on both tracks (Stim simulation)
+    qiskit noise=uniform       decoder=pymatching: sim P_error=0.0094 +- 0.0014
+    qiskit noise=uniform:0.01  decoder=pymatching: sim P_error=0.0094 +- 0.0014
+    qiskit noise=calibration   decoder=pymatching: sim P_error=0.0166 +- 0.0018
+    qrisp  noise=uniform       decoder=pymatching: sim P_error=0.0126 +- 0.0016
+    qrisp  noise=uniform:0.01  decoder=pymatching: sim P_error=0.0132 +- 0.0016
+    qrisp  noise=calibration   decoder=pymatching: sim P_error=0.0310 +- 0.0025
 
 All tests passed.

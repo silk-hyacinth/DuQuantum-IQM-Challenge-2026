@@ -2,7 +2,10 @@
 diagnose_run.py — figure out WHERE the errors come from in a saved run (no QPU time used).
 
 Usage (from the repo root):
-    python diagnose_run.py results/garnet_d3_20261024_161043.json
+    python diagnose_run.py results/<run>.json
+
+Works for results files from run_experiment.py, either track (older files without a
+"track" field are treated as qiskit).
 
 Prints (and saves to results/<name>_diagnosis.txt):
   1. Detector firing rate per round, split into X-checks and Z-checks.
@@ -24,55 +27,33 @@ import os
 import sys
 
 import numpy as np
-import stim
 
-from surface_code import make_stim_circuit, DEFAULT_NOISE
-from internal_helpers import counts_to_measurement_array, get_qubit_lists
+from tracks import TRACKS
+from noise_models import Rates, annotate
 
-
-def hardware_detectors(run, distance, basis="Z"):
-    R = run["rounds"]
-    shots = sum(run["counts"].values())
-    sc = make_stim_circuit(distance, R, basis=basis, noise=None)
-    raw = counts_to_measurement_array(run["counts"], sc.num_measurements, shots)
-    det, obs = sc.compile_m2d_converter().convert(measurements=raw, separate_observables=True)
-    return sc, det, obs
+BASE_P = 0.003      # background noise every comparison model has, on top of its one error type
 
 
-def firing_table(sc, det):
-    coords = sc.get_detector_coordinates()
-    qcoords = {tuple(map(float, v)): k for k, v in sc.get_final_qubit_coordinates().items()}
-    first_h = next(i for i in sc.flattened() if i.name == "H")
-    x_anc = {t.value for t in first_h.targets_copy()}
+def firing_table(det, info):
     rows = {}
-    for k in range(sc.num_detectors):
-        x, y, t = coords[k][:3]
-        typ = "X" if qcoords[(x, y)] in x_anc else "Z"
-        rows.setdefault(int(t), {}).setdefault(typ, []).append(float(det[:, k].mean()))
+    for k, d in enumerate(info):
+        rows.setdefault(d["round"], {}).setdefault(d["type"], []).append(float(det[:, k].mean()))
     return rows
 
 
-def model(distance, R, kind, p, basis="Z"):
-    c = make_stim_circuit(distance, R, basis=basis, noise=DEFAULT_NOISE)
-    data, anc = get_qubit_lists(c)
-    ms = [i for i, ins in enumerate(c) if ins.name == "M"]
-    out = stim.Circuit()
-    for i, ins in enumerate(c):
-        mid = ins.name == "M" and i != ms[-1]
-        if kind == "readout" and mid and p > 0:
-            out.append("M", ins.targets_copy(), p)          # noisy readout
-        else:
-            out.append(ins)
-        if mid and p > 0:
-            if kind == "data_idle":
-                out.append("DEPOLARIZE1", data, p)
-            if kind == "anc_flip":
-                out.append("X_ERROR", anc, p)
-    return out
+def model(twin, kind, p):
+    """The twin with background noise plus one error type of strength p."""
+    b = BASE_P
+    return annotate(twin, Rates(
+        gate1=lambda q: b,
+        gate2=lambda a, c: b,
+        readout=lambda q: b + (p if kind == "readout" else 0.0),
+        after_readout=lambda q: b + (p if kind == "anc_flip" else 0.0),
+        idle=lambda q: ((b + p) / 3,) * 3 if kind == "data_idle" else (b / 3,) * 3,
+    ))
 
 
-def correlations(det, c):
-    coords = c.get_detector_coordinates()
+def correlations(det, info):
     x = det.astype(float)
     m = x.mean(0)
     cov = (x.T @ x) / len(x) - np.outer(m, m)
@@ -80,13 +61,15 @@ def correlations(det, c):
     n = det.shape[1]
     for i in range(n):
         for j in range(i + 1, n):
-            (xi, yi, ti), (xj, yj, tj) = coords[i][:3], coords[j][:3]
-            same = (xi, yi) == (xj, yj)
-            if same and abs(ti - tj) == 1:
+            a, b = info[i], info[j]
+            same = a["ancilla"] == b["ancilla"]
+            dt = abs(a["round"] - b["round"])
+            close = abs(a["pos"][0] - b["pos"][0]) <= 2 and abs(a["pos"][1] - b["pos"][1]) <= 2
+            if same and dt == 1:
                 t1.append(cov[i, j])
-            elif same and abs(ti - tj) == 2:
+            elif same and dt == 2:
                 t2.append(cov[i, j])
-            elif ti == tj and not same and abs(xi - xj) <= 2 and abs(yi - yj) <= 2:
+            elif dt == 0 and not same and close:
                 sp.append(cov[i, j])
     mean = lambda v: float(np.mean(v)) if v else float("nan")
     return float(det.mean()), mean(t1), mean(t2), mean(sp)
@@ -94,43 +77,46 @@ def correlations(det, c):
 
 def main(path, model_rounds=3):
     r = json.load(open(path))
-    d = r["distance"]
+    d = r.get("distance", 3)
     basis = r.get("basis", "Z")
+    track = TRACKS[r.get("track", "qiskit")]
     lines = []
     say = lambda s="": (print(s), lines.append(s))
 
-    say(f"Diagnosis of {os.path.basename(path)}  ({r['target']}, d={d}, {basis}-memory, {r['shots']} shots)")
+    say(f"Diagnosis of {os.path.basename(path)}  ({r['target']}, track {track.name}, d={d}, "
+        f"{basis}-memory, {r['shots']} shots{', DD' if r.get('dd') else ''})")
     say("\n1. Detector firing rate per round (fraction of shots each check reported a change)")
     say("   round:  X-checks   Z-checks")
+    events = {}
     for run in r["runs"]:
-        sc, det, obs = hardware_detectors(run, d, basis)
-        rows = firing_table(sc, det)
+        det, obs = track.events_from_counts(d, run["rounds"], basis, run["counts"])
+        events[run["rounds"]] = det
+        rows = firing_table(det, track.detector_info(d, run["rounds"], basis))
         say(f"  -- experiment with rounds={run['rounds']} (raw logical flip rate {obs[:, 0].mean():.3f})")
         for t in sorted(rows):
-            xs = rows[t].get("X")
-            zs = rows[t].get("Z")
+            xs, zs = rows[t].get("X"), rows[t].get("Z")
             fx = f"{np.mean(xs):.3f}" if xs else "  -  "
             fz = f"{np.mean(zs):.3f}" if zs else "  -  "
             say(f"     {t:>3}:    {fx:>6}     {fz:>6}")
 
-    run = next((x for x in r["runs"] if x["rounds"] == model_rounds), None)
-    if run is None or model_rounds < 3:
-        say("\n(need a run with rounds>=3 for the correlation analysis)")
+    if model_rounds not in events:
+        say(f"\n(need a run with rounds={model_rounds} for the correlation analysis)")
     else:
-        sc, det, _ = hardware_detectors(run, d, basis)
-        f, a, b, s = correlations(det, sc)
+        info = track.detector_info(d, model_rounds, basis)
+        twin = track.twin(d, model_rounds, basis)
+        f, a, b, s = correlations(events[model_rounds], info)
         say(f"\n2. Error-model comparison (rounds={model_rounds}); covariance between detector pairs")
         say(f"   {'':26}{'firing':>8}{'time dt=1':>11}{'time dt=2':>11}{'space':>9}")
         say(f"   {'hardware':26}{f:>8.3f}{a:>11.4f}{b:>11.4f}{s:>9.4f}")
         for kind in ("data_idle", "anc_flip", "readout"):
             best = None
             for p in np.linspace(0.0, 0.5, 26):
-                c = model(d, model_rounds, kind, p, basis)
+                c = model(twin, kind, p)
                 dd, _ = c.compile_detector_sampler().sample(20000, separate_observables=True)
                 if best is None or abs(dd.mean() - f) < abs(best[1].mean() - f):
-                    best = (p, dd, c)
-            p, dd, c = best
-            f2, a2, b2, s2 = correlations(dd, c)
+                    best = (p, dd)
+            p, dd = best
+            f2, a2, b2, s2 = correlations(dd, info)
             say(f"   {kind + f' (p={p:.2f})':26}{f2:>8.3f}{a2:>11.4f}{b2:>11.4f}{s2:>9.4f}")
         say("   A model 'matches' if its three covariance columns look like the hardware row.")
 

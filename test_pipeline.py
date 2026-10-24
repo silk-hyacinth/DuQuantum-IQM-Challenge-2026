@@ -10,6 +10,12 @@ Tests
 3. Stim -> Qiskit conversion is correct (noiseless Qiskit run => 0 detectors fire, 0 logical flips)
 4. Transpiling onto IQM fake backends inserts 0 SWAPs
 5. Full pipeline on IQM's noisy fake Garnet (circuit -> transpile -> run -> syndromes -> decode)
+6. Qrisp track: its circuit, converted for a local simulator, gives 0 detections without noise
+7. Noise models and decoders: every built-in model gives a valid decoder map on both tracks,
+   and a decoder can be named as module:function
+
+Slow parts: test 5 runs a noisy 20-qubit simulation, test 6 traces Qrisp circuits (~1-2 min each).
+The Qrisp branch's own, deeper self-test is check_surface_code.py.
 """
 
 import numpy as np
@@ -102,10 +108,48 @@ def test_fake_garnet_pipeline(distance=3, rounds_list=(1, 2, 3), shots=2_000):
         print(f"    rounds={r}  P_error={p:.3f} ± {err:.3f}   (no correction: {raw:.3f})")
 
 
+def test_qrisp_noiseless(rounds_list=(1, 2), shots=200):
+    print("\n[6] Qrisp track, noiseless simulation (expect 0 detections, 0 flips)")
+    from tracks import TRACKS, qrisp_to_qiskit
+    sim = AerSimulator()
+    track = TRACKS["qrisp"]
+    for basis in ("Z", "X"):
+        for r in rounds_list:
+            _, qc, post = track._prepare(3, r, basis)
+            counts = sim.run(qrisp_to_qiskit(qc), shots=shots).result().get_counts()
+            det, obs = track._events(post, counts, reverse=False)
+            assert det.shape[1] == track.twin(3, r, basis).num_detectors
+            assert len(track.detector_info(3, r, basis)) == det.shape[1]
+            assert int(det.sum()) == 0 and int(obs.sum()) == 0
+            print(f"    {basis}-memory rounds={r}: detectors fired=0, logical flips=0  OK")
+
+
+def test_noise_models_and_decoders(rounds=3, shots=5_000):
+    print("\n[7] Noise models x decoders on both tracks (Stim simulation)")
+    from tracks import TRACKS
+    from noise_models import NOISE_MODELS, NoiseContext, add_noise, calibration_from_fake, calibration_to_json
+    from decoding import DECODERS, get_decoder, logical_error
+    cal = calibration_to_json(calibration_from_fake(IQMFakeGarnet()))
+    qubit_map = {q: f"QB{q + 1}" for q in range(20)}       # any placement works for this check
+    assert get_decoder("decoding:pymatching_decoder") is DECODERS["pymatching"]
+    for tname, track in TRACKS.items():
+        twin = track.twin(3, rounds, "Z")
+        sample = add_noise(twin, "uniform:0.003", NoiseContext())
+        det, obs = sample.compile_detector_sampler().sample(shots, separate_observables=True)
+        for spec in ["uniform", "uniform:0.01", "calibration"]:
+            noisy = add_noise(twin, spec, NoiseContext(calibration=cal, qubit_map=qubit_map))
+            for dec in DECODERS:
+                p, err, _ = logical_error(det, obs, noisy, dec)
+                assert p < 0.1
+                print(f"    {tname:6} noise={spec:13} decoder={dec}: sim P_error={p:.4f} +- {err:.4f}")
+
+
 if __name__ == "__main__":
     test_stim_simulation()
     test_detectors_valid()
     test_qiskit_noiseless()
     test_zero_swaps()
     test_fake_garnet_pipeline()
+    test_qrisp_noiseless()
+    test_noise_models_and_decoders()
     print("\nAll tests passed.")
