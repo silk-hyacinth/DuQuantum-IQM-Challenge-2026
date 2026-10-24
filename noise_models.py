@@ -271,3 +271,28 @@ def calibration_from_fake(backend) -> dict:
         "calibration_set_id": "fake",
         "quantum_computer": ep.name,
     }
+
+
+def calibration_from_legacy(snapshot: dict) -> dict:
+    """Calibration files saved before the merge (iqm-qubit-selector "fidelities" format) ->
+    the current format. Approximate: that helper's readout number can be the heralded one,
+    and its T2 may be Ramsey or echo (see garnet_layout.py), so treat results as a rough guide."""
+    import ast
+    f = snapshot.get("fidelities") or {}
+    cz = {}
+    for pair, fid in (f.get("CZ") or {}).items():
+        a, b = ast.literal_eval(pair)
+        cz["__".join(sorted((a, b)))] = 1.0 - fid
+    out = {
+        "source": "legacy_qubit_selector",
+        "prx": {q: 1.0 - v for q, v in (f.get("1Q") or {}).items()},
+        "readout": {q: 1.0 - v for q, v in (f.get("readout") or {}).items()},
+        "qndness": dict(f.get("readout_qndness") or {}),
+        "t1": {q: v * 1e-6 for q, v in (f.get("t1") or {}).items()},     # microseconds -> seconds
+        "t2": {q: v * 1e-6 for q, v in (f.get("t2") or {}).items()},
+        "cz": cz,
+        "calibration_set_id": snapshot.get("calibration_set_id"),
+    }
+    out["t2_echo"] = dict(out["t2"])
+    out["qubits"] = sorted(out["t1"], key=lambda q: int(q[2:]))
+    return out

@@ -18,7 +18,7 @@ fit, saving, plots. A track only has to provide:
   twin(distance, rounds, basis)          noiseless Stim circuit with the DETECTOR rules,
                                          numbered like the track's detection events
   detector_info(distance, rounds, basis) per detector: round, check type (X/Z), position
-  run(distance, rounds_list, basis, shots, quantum_computer, fake, dd)
+  run(distance, rounds_list, basis, shots, quantum_computer, fake, dd, herald)
                                          all round counts as ONE job; per round count a dict:
                                            rounds, counts, det_events, obs_flips,
                                            qubit_map (twin qubit -> "QB7"), job_id,
@@ -41,12 +41,21 @@ def _fake_backend():
     return IQMFakeGarnet()
 
 
-def _dd_options(dd: bool) -> dict:
-    """backend.run() keyword that turns on IQM's dynamical decoupling."""
-    if not dd:
-        return {}
-    from iqm.iqm_client import CircuitCompilationOptions, DDMode
-    return {"circuit_compilation_options": CircuitCompilationOptions(dd_mode=DDMode.ENABLED)}
+def compilation_options(dd: bool = False, herald: bool = False):
+    """IQM server-side options for a real-hardware job (both tracks use the same ones).
+
+    max_circuit_duration_over_t2=0.0 turns off the server's "circuit longer than T2"
+    rejection, which would otherwise refuse long sweeps (6-8 rounds). It does not change
+    how the circuit runs.
+    dd     : dynamical decoupling during idle times
+    herald : measure every qubit before the circuit and drop shots that did not start in 0
+    """
+    from iqm.iqm_client import CircuitCompilationOptions, DDMode, HeraldingMode
+    return CircuitCompilationOptions(
+        max_circuit_duration_over_t2=0.0,
+        dd_mode=DDMode.ENABLED if dd else DDMode.DISABLED,
+        heralding_mode=HeraldingMode.ZEROS if herald else HeraldingMode.NONE,
+    )
 
 
 def _job_id(job) -> str:
@@ -95,7 +104,8 @@ class QiskitTrack:
         raw = counts_to_measurement_array(counts, twin.num_measurements, sum(counts.values()))
         return twin.compile_m2d_converter().convert(measurements=raw.astype(bool), separate_observables=True)
 
-    def run(self, distance, rounds_list, basis, shots, quantum_computer="garnet", fake=False, dd=False):
+    def run(self, distance, rounds_list, basis, shots, quantum_computer="garnet", fake=False, dd=False,
+            herald=False):
         from run_on_hardware import get_backend, get_physical_layout
         from internal_helpers import counts_to_measurement_array
         from extract_syndromes import extract_syndromes
@@ -112,7 +122,8 @@ class QiskitTrack:
             prepared.append((r, qc_t, twin, layout, n_cx == n_cz))
             print(f"[qiskit] d={distance} {basis} rounds={r}: CX={n_cx} -> CZ={n_cz}, depth {qc_t.depth()}")
 
-        job = backend.run([p[1] for p in prepared], shots=shots, **({} if fake else _dd_options(dd)))
+        options = {} if fake else {"circuit_compilation_options": compilation_options(dd, herald)}
+        job = backend.run([p[1] for p in prepared], shots=shots, **options)
         print(f"[qiskit] submitted job {_job_id(job)} ({len(prepared)} circuits x {shots} shots); waiting ...")
         result = job.result()
 
@@ -216,7 +227,8 @@ class QrispTrack:
         _, _, post = self._prepare(distance, rounds, basis)
         return self._events(post, counts, reverse=False)
 
-    def run(self, distance, rounds_list, basis, shots, quantum_computer="garnet", fake=False, dd=False):
+    def run(self, distance, rounds_list, basis, shots, quantum_computer="garnet", fake=False, dd=False,
+            herald=False):
         if fake:
             return self._run_fake(distance, rounds_list, basis, shots)
 
@@ -225,7 +237,7 @@ class QrispTrack:
         import os
         from run_on_hardware import SERVER_URL, run_qrisp_batch
         os.environ.setdefault("IQM_SERVER_URL", SERVER_URL)
-        options = _dd_options(dd).get("circuit_compilation_options")
+        options = compilation_options(dd, herald)
         configs = [{"distance": distance, "rounds": r, "basis": basis} for r in rounds_list]
         results = run_qrisp_batch(configs, shots=shots, quantum_computer=quantum_computer,
                                   compilation_options=options, save_dir=None)
