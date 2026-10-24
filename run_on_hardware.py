@@ -5,8 +5,76 @@ from extract_syndromes import *
 from qiskit import transpile
 
 
-TOKEN = ""
+import os
+import numpy as np
+import pymatching
+
+TOKEN = os.environ.get("IQM_TOKEN", "")   # set the IQM_TOKEN environment variable, or paste your token here
 SERVER_URL = "https://resonance.iqm.tech"
+
+
+def get_backend(quantum_computer: str = "garnet", token: str = None):
+    """Connect to IQM Resonance and return the backend for `quantum_computer`."""
+    from iqm.qiskit_iqm import IQMProvider
+    provider = IQMProvider(SERVER_URL, quantum_computer=quantum_computer, token=token or TOKEN)
+    return provider.get_backend()
+
+
+def get_calibration(backend) -> dict:
+    """
+    Snapshot of the device's current error rates, as a JSON-safe dict. Save it next to your
+    results: calibration changes over the day, and a calibration-aware decoder needs the
+    numbers from when the data was taken.
+
+    Real hardware -> {"source": "resonance", "fidelities": {...}}
+        fidelities["CZ"]["[QB1, QB2]"], ["1Q"]["QB1"], ["readout"]["QB1"], ...  are FIDELITIES
+        (error = 1 - fidelity); ["t1"]["QB1"], ["t2"]["QB1"] are coherence times.
+    Fake backend   -> {"source": "fake_error_profile", "error_profile": {...}}
+        the noise model the fake backend simulates (error rates, T1/T2 in ns, readout errors).
+    """
+    from datetime import datetime
+    out = {"retrieved_at": datetime.now().isoformat(timespec="seconds"),
+           "backend": getattr(backend, "name", str(backend))}
+
+    if hasattr(backend, "error_profile"):                      # IQM fake backend
+        import dataclasses
+
+        def clean(x):
+            if isinstance(x, dict):
+                return {("-".join(k) if isinstance(k, tuple) else str(k)): clean(v) for k, v in x.items()}
+            return x
+        out["source"] = "fake_error_profile"
+        out["error_profile"] = clean(dataclasses.asdict(backend.error_profile))
+        return out
+
+    try:                                                        # real hardware
+        from iqm.qubit_selector.qubit_selector import CalibrationDataManager
+        out["source"] = "resonance"
+        out["fidelities"] = CalibrationDataManager().get_calibration_fidelities(backend)
+    except Exception as e:
+        out["source"] = "unavailable"
+        out["error"] = repr(e)
+        print(f"[get_calibration] could not fetch calibration data: {e!r}")
+    return out
+
+
+def get_physical_layout(qc_t, stim_circ, backend) -> list:
+    """
+    Which physical qubit each code qubit ran on, e.g.
+    [{"stim_qubit": 1, "role": "data", "coords": [1, 1], "physical": "QB7"}, ...]
+    Needed to match calibration numbers to the right part of the code.
+    """
+    data_q, anc_q = get_qubit_lists(stim_circ)
+    stim_qubits = sorted(set(data_q) | set(anc_q))     # same ordering stim_to_qiskit uses
+    coords = stim_circ.get_final_qubit_coordinates()
+    phys = qc_t.layout.initial_index_layout(filter_ancillas=True)
+    out = []
+    for i, sq in enumerate(stim_qubits):
+        p = phys[i]
+        name = backend.index_to_qubit_name(p) if hasattr(backend, "index_to_qubit_name") else f"Q{p}"
+        out.append({"stim_qubit": sq, "role": "data" if sq in data_q else "ancilla",
+                    "coords": [float(c) for c in coords[sq]], "physical": name})
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -24,75 +92,64 @@ def run_qiskit(
     rounds: int      = 1,
     shots: int       = 5_000,
     token: str       = None,
-    quantum_computer: str = "emerald",
+    quantum_computer: str = "garnet",
     no_reset: bool   = True,
+    backend          = None,
+    initial_layout   = None,
+    dd: bool         = False,
 ) -> dict:
     """
-    Build in qiskit. Runs the surface code on IQM Emerald via IQM Resonance.
+    Runs the no-reset surface code via Qiskit and returns detection events.
 
-        Stim circuit → Qiskit circuit → transpile → run → counts
+        make_qiskit_circuit → transpile → backend.run → counts
         → raw measurements → extract_syndromes()
 
     Parameters
     ----------
-    distance         : code distance (use 3 for emerald)
-    rounds           : measurement rounds
-    shots            : number of circuit executions
-    token            : IQM Resonance API token (falls back to TOKEN)
-    quantum_computer : e.g. "emerald"
-    no_reset         : build the no-reset circuit (required on Emerald)
+    distance, rounds, shots, no_reset : experiment settings
+    token            : IQM Resonance API token (falls back to TOKEN / IQM_TOKEN env var)
+    quantum_computer : "garnet", "emerald", ...  (ignored if `backend` is given)
+    backend          : optional ready-made backend, e.g. IQMFakeGarnet() for local testing
+    initial_layout   : optional list of physical qubits (position i = physical qubit for circuit qubit i).
+                       None -> the transpiler picks a SWAP-free placement itself.
+    dd               : turn on IQM's dynamical decoupling (real hardware only)
 
     Returns
     -------
-    syndromes : dict  output of extract_syndromes()
-                "det_events" (shots, num_detectors), "obs_flips" (shots, num_observables), ...
+    syndromes : dict from extract_syndromes(), plus
+                "counts"       raw Qiskit counts (save these!)
+                "transpiled"   the circuit that actually ran
+                "swap_free"    True if every CX became exactly one CZ
+                "layout"       which physical qubit each code qubit ran on
     """
-    from iqm.qiskit_iqm import IQMProvider
+    if backend is None:
+        backend = get_backend(quantum_computer, token)
 
-    # Build circuits, exchange for make_qiskit_circuit() if desired
-    stim_circ  = make_stim_circuit(distance, rounds, no_reset=no_reset, noise=None)
+    # 1. Circuit (Qiskit) + its Stim twin (defines the detectors for this exact circuit)
+    qc        = make_qiskit_circuit(distance, rounds, no_reset=no_reset)
+    stim_circ = make_stim_circuit(distance, rounds, no_reset=no_reset, noise=None)
 
-    #CREATE A CIRCUIT TO BE EXECUTED ON HARDWARE
-    qc = []
-    #qc, stim_to_dense, meas_order = stim_to_qiskit(stim_circ)
-    #qc = make_qiskit_circuit(args)
+    # 2. Transpile: rewrite into the device's native gates (r, cz) and assign physical qubits
+    qc_t = transpile(qc, backend, optimization_level=3, seed_transpiler=1,
+                     initial_layout=initial_layout)
+    n_cx, n_cz = qc.count_ops().get("cx", 0), qc_t.count_ops().get("cz", 0)
+    print(f"[run_qiskit] d={distance} rounds={rounds}: CX={n_cx} -> CZ={n_cz} "
+          f"({'0 SWAPs' if n_cx == n_cz else f'{(n_cz - n_cx) // 3} SWAPs!'}), depth {qc_t.depth()}")
 
+    # 3. Run
+    run_kwargs = {}
+    if dd:
+        from iqm.iqm_client import CircuitCompilationOptions, DDMode
+        run_kwargs["circuit_compilation_options"] = CircuitCompilationOptions(dd_mode=DDMode.ENABLED)
+    job    = backend.run(qc_t, shots=shots, **run_kwargs)
+    counts = job.result().get_counts()
 
-    # OPTIONAL: IF YOU WANT TO ASSIGN QUBIT MAP BY HAND
-    # Map abstract Qiskit qubits to emerald physical qubits
-    qubit_map  = build_emerald_qubit_map(stim_circ)
-
-    # HIGHLY RECOMMEND PRINTING THIS, if you are using it.
-    # print(qubit_map)
-    # initial_layout: Qiskit needs a list where position i = physical qubit for logical i
-    n_qubits   = qc.num_qubits
-    layout     = [qubit_map.get(i, i) for i in range(n_qubits)]
-
-    # Connect to IQM Resonance
-    provider   = IQMProvider(
-        SERVER_URL,
-        quantum_computer=quantum_computer,
-        token=token or TOKEN
-    )
-    backend    = provider.get_backend()
-
-    # Transpile: Qiskit transpilerwill insert SWAPs for diagonal CX pairs automatically
-    # think about whether this is necessary
-    qc_t       = transpile(
-    # arguments
-    )
-    print(f"Transpiled circuit depth: {qc_t.depth()}  "
-          f"(ideal: {qc.depth()}, extra depth from SWAPs)")
-
-    # Run
-    job        = backend.run(qc_t, shots=shots)
-    counts     = job.result().get_counts()
-
-    # Convert counts dict → (shots, num_measurements) numpy array
-    raw_meas   = counts_to_measurement_array(counts, stim_circ.num_measurements,
-                                               shots)
-    # m2d converter must come from the circuit that actually ran
-    return extract_syndromes(raw_meas, stim_circ)
+    # 4. Counts -> (shots, num_measurements) array -> detection events
+    raw_meas  = counts_to_measurement_array(counts, stim_circ.num_measurements, shots)
+    syndromes = extract_syndromes(raw_meas, stim_circ, print_summary=False)
+    syndromes.update(counts=counts, transpiled=qc_t, swap_free=(n_cx == n_cz),
+                     layout=get_physical_layout(qc_t, stim_circ, backend))
+    return syndromes
 
 
 
@@ -159,26 +216,31 @@ def run_qrisp(
 
 
 def decode_hardware_results(
-    syndromes: dict
+    syndromes: dict,
+    distance: int,
+    rounds: int,
+    noise: Optional[dict] = None,
 ) -> tuple[float, float]:
     """
-    Decodes the output of run_qiskit() or run_qrisp() via your desired decoder.
+    Decodes the output of run_qiskit() (or run_qrisp()) with PyMatching.
 
-    NOTE: Other parameters can be important for this function, such as a noise model.
-    If you decode with a detector error model (DEM): the DEM’s detectors must match the circuit that ran.
-
-
-    Parameters
-    ----------
-    syndromes           : dict  output of run_qiskit() / run_qrisp()
+    The decoder needs a noise model to know which errors are likely. It is built from a
+    NOISY Stim copy of the same no-reset circuit that ran, so the detectors match.
+    noise=None -> DEFAULT_NOISE (uniform guess). Better: values from calibration data.
 
     Returns
     -------
-    ler : float   estimated logical error probability for this round count (fit over several round counts to get the logical error rate, see README)
-    err : float   OPTIONAL 1-sigma statistical error
+    p   : float  logical error probability for this round count
+    err : float  1-sigma statistical error, sqrt(p(1-p)/shots)
     """
+    noisy   = make_stim_circuit(distance, rounds, no_reset=True, noise=noise or DEFAULT_NOISE)
+    dem     = noisy.detector_error_model(decompose_errors=True)
+    matcher = pymatching.Matching.from_detector_error_model(dem)
 
-    # USE e.g. PyMatching to decode
+    det_events = syndromes["det_events"]
+    obs_flips  = syndromes["obs_flips"]
+    pred = np.asarray(matcher.decode_batch(det_events))
 
-    ler,err = [], []
-    return ler, err
+    p   = float(np.mean(pred[:, 0] != obs_flips[:, 0]))
+    err = float(np.sqrt(p * (1 - p) / len(det_events)))
+    return p, err

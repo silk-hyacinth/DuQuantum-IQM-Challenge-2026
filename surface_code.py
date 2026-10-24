@@ -189,7 +189,16 @@ def make_qiskit_circuit(
     qiskit.QuantumCircuit
     """
 
-    return
+    from stim_to_qiskit import stim_to_qiskit
+
+    stim_circ = make_stim_circuit(distance, rounds, basis=basis, no_reset=no_reset, noise=None)
+    qc, stim_to_dense, meas_order = stim_to_qiskit(stim_circ)
+
+    clean = qc.copy_empty_like()
+    for inst in qc.data:
+        if inst.operation.name != "reset":
+            clean.append(inst)
+    return clean
 
 def make_qrisp_experiment(
     distance: int,
