@@ -5,9 +5,10 @@ from extract_syndromes import *
 from qiskit import transpile
 
 
+# Leave TOKEN empty in git. run_qrisp() reads IQM_TOKEN from the local, gitignored
+# .env file instead, so the token never ends up in the repository.
 TOKEN = ""
 SERVER_URL = "https://resonance.iqm.tech"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  5.  HARDWARE EXECUTION ON IQM RESONANCE
@@ -17,6 +18,9 @@ SERVER_URL = "https://resonance.iqm.tech"
 #  works for either.
 #
 #  NOTE: Emerald does not support mid-circuit reset -> use the no-reset circuit.
+#
+#  DuQuantum uses the QRISP track (run_qrisp below) on IQM Garnet.
+#  run_qiskit is the untouched template from main and is not used by us.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_qiskit(
@@ -110,39 +114,47 @@ def run_qrisp(
     dry_run: bool    = False,
 ) -> dict:
     """
-    Build in qrisp. Runs the surface code on IQM Garnet via IQM Resonance.
+    Run the surface code memory experiment on real IQM hardware (Qrisp track).
 
-        make_qrisp_experiment → pin to the best zero-SWAP Garnet placement
-        → PRX lowering → IQMBackend → counts → detection events + observable flips
+    What happens, step by step
+    --------------------------
+      1. Build the circuit with make_qrisp_experiment (surface_code.py).
+      2. Read today's calibration and pick the best zero-SWAP placement
+         (garnet_layout.py). On Garnet there is only one possible qubit set.
+      3. Compile: pin the circuit onto those physical qubits (and prove every
+         CZ is on a real coupler), then turn each SQRT_Y gate into one PRX pulse.
+      4. Submit to IQM Resonance and wait. The hardware returns "counts": for
+         each 17-bit (or longer) string of measurement results, how many shots
+         produced it.
+      5. Convert each bitstring into detection events and the observable flip,
+         using the post-processing Qrisp generated from our parity() calls.
+      6. Save everything to results/ so the run can be re-analysed later.
 
-    The DetectorExperiment stores the info the detectors and observables itself, so
-    counts_to_measurement_array() and extract_syndromes() are not needed here.
-
-    Credentials come from ``token`` or IQM_TOKEN (loaded from .env). Every
-    hardware run is saved to ``save_dir`` as <stem>.npz (detection events,
-    observable flips) and <stem>.json (job id, calibration set, placement,
-    raw counts) so results survive the session.
-
-    Parameters
-    ----------
+    Inputs
+    ------
     distance            : code distance (3 is the only one that fits Garnet)
-    rounds              : measurement rounds
-    shots               : number of circuit executions (at most 20 000)
-    token               : IQM Resonance API token
-    quantum_computer    : e.g. "garnet"
-    no_reset            : build the no-reset circuit (required on hardware)
-    basis               : "Z" or "X" memory
-    idle_time           : extra ancilla delay between rounds in seconds; nonzero
-                          values need pulse-level access
-    compilation_options : iqm.iqm_client.CircuitCompilationOptions or None
-    save_dir            : directory for the saved run, or None to skip saving
-    dry_run             : transpile and validate against the device, but do not submit
+    rounds              : stabilizer rounds; sweep this to get the per-round rate
+    shots               : repetitions of the circuit (Resonance max 20 000)
+    token               : API token; normally leave None and keep it in .env
+    quantum_computer    : "garnet"
+    no_reset            : True on hardware (no mid-circuit reset available)
+    basis               : "Z" protects a bit value, "X" protects a phase
+    idle_time           : extra wait (seconds) on ancillas between rounds;
+                          nonzero adds iqm.delay ops, which need pulse-level access
+    compilation_options : iqm.iqm_client.CircuitCompilationOptions, e.g. to turn
+                          on dynamical decoupling or heralding. None = IQM defaults.
+    save_dir            : where to save the run (None = don't save)
+    dry_run             : do steps 1-3 and print the compiled gate counts,
+                          but do not submit (costs nothing)
 
-    Returns
-    -------
-    syndromes : dict  same keys as extract_syndromes() from qiskit function
-                "det_events" (shots, num_detectors), "obs_flips" (shots, num_observables),
-                plus the run metadata needed to decode it
+    Output
+    ------
+    dict with
+      det_events : bool array (shots, n_detectors). True = that alarm fired.
+      obs_flips  : bool array (shots, 1). True = the logical value came out
+                   flipped before any correction.
+      plus metadata (job_id, calibration_set_id, placement, rounds, basis, ...)
+      that decode_hardware_results() needs.
     """
     import json
     import os
@@ -155,6 +167,7 @@ def run_qrisp(
     from qrisp.jasp import make_jaspr
     from garnet_layout import fetch_calibration, fixed_layout, rank_placements
 
+    # Credentials: .env holds IQM_TOKEN, IQM_SERVER_URL, IQM_QUANTUM_COMPUTER.
     load_dotenv()
     if token or TOKEN:
         os.environ["IQM_TOKEN"] = token or TOKEN
@@ -163,15 +176,24 @@ def run_qrisp(
     if shots > 20_000:
         raise ValueError("Resonance allows at most 20 000 shots per circuit")
 
+    # Step 1. Build the experiment WITHOUT noise annotations (hardware supplies
+    # the real noise). Tracing it ("make_jaspr") gives:
+    #   qc              : the plain quantum circuit to send to the chip
+    #   post_processing : a compiled function bits -> (detectors..., observable)
     experiment = make_qrisp_experiment(distance, rounds, basis=basis, no_reset=no_reset,
                                        idle_time=idle_time)
     jaspr = make_jaspr(experiment._func)()
     qc = jaspr.to_qc()[-1]
     post_processing = jax_jit(jaspr.extract_post_processing())
 
-    cal = fetch_calibration(quantum_computer)
+    # Step 2. Calibration-ranked placement (index 0 = lowest expected faults).
+    cal = fetch_calibration(quantum_computer=quantum_computer)
     best = rank_placements(experiment.layout, cal)[0]
 
+    # Step 3. An EMPTY PassManager means "do not let IQM's default compiler
+    # re-route or re-place anything". We add exactly two passes:
+    #   fixed_layout   : wire order = our placement, and raises on any non-native CZ
+    #   convert_to_prx : SQRT_Y / SQRT_Y_DAG -> one PRX pulse each
     backend = IQMBackend(
         server_url=SERVER_URL,
         device_instance=quantum_computer,
@@ -181,12 +203,17 @@ def run_qrisp(
     backend.pm += fixed_layout(best.placement, backend._dqa.qubits, backend.connectivity)
     backend.pm += convert_to_prx
 
+    # Compile once locally just to count what will run (and catch errors early).
     native = backend.pm.run(qc)
     iqm_circuit = qrisp_to_iqm_converter(native, backend._dqa)
     op_counts = {}
     for op in iqm_circuit.instructions:
         op_counts[op.name] = op_counts.get(op.name, 0) + 1
 
+    # Everything needed to reproduce / re-decode this run later. The per-qubit
+    # calibration of the qubits we used is saved too, so drift between runs
+    # can be compared.
+    used = set(best.qubits)
     meta = {
         "quantum_computer": quantum_computer,
         "calibration_set_id": str(backend._calibration_set_id),
@@ -195,17 +222,26 @@ def run_qrisp(
         "placement": {str(i): q for i, q in sorted(best.placement.items())},
         "budget_per_round": best.budget,
         "native_ops": op_counts,
+        "calibration": {
+            key: {q: v for q, v in cal[key].items() if q in used}
+            for key in ("prx", "readout", "e01", "e10", "leakage", "t1", "t2", "t2_echo")
+        } | {"cz": {"__".join(sorted(p)): e for p, e in cal["cz"].items() if p <= used}},
     }
     print(f"placement on {quantum_computer}: {best.qubits}")
     print(f"native ops: {op_counts}  (no swap/move ops: every CZ is a native coupler)")
     if dry_run:
         return {"det_events": None, "obs_flips": None, **meta}
 
+    # Step 4. Submit and wait. counts = {"0110...": how many shots gave this}.
     job = backend.run_async(qc, shots)
     print(f"submitted job {job.job_id}; waiting for results ...")
     counts = job.result().all_counts[0]
     meta["job_id"] = str(job.job_id)
 
+    # Step 5. Each distinct bitstring is post-processed once, then repeated
+    # `count` times, giving one row per shot. The last output of
+    # post_processing is the observable; everything before it is a detector,
+    # in the same order make_qrisp_experiment returned them.
     det_rows, obs_rows, weights = [], [], []
     for bitstring, count in counts.items():
         out = np.asarray(post_processing(np.array([c == "1" for c in bitstring])), dtype=bool)
@@ -216,6 +252,8 @@ def run_qrisp(
     obs_flips = np.repeat(np.array(obs_rows), weights, axis=0)
     meta["shots_returned"] = int(det_events.shape[0])
 
+    # Step 6. Save: .npz = the arrays, .json = metadata + raw counts. The raw
+    # counts are identical to what the Resonance dashboard shows for the job.
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         stem = (f"{time.strftime('%Y%m%d-%H%M%S')}_{quantum_computer}_d{distance}"
@@ -230,7 +268,11 @@ def run_qrisp(
 
 
 def load_hardware_results(path: str) -> dict:
-    """Reload a run saved by run_qrisp (pass either the .npz or the .json path)."""
+    """Reload a run saved by run_qrisp (give either the .npz or the .json path).
+
+    Returns the same dict shape as run_qrisp, so it can go straight into
+    decode_hardware_results() or summarize_hardware_results(). No token needed.
+    """
     import json
     stem = path.rsplit(".", 1)[0]
     arrays = np.load(stem + ".npz")
@@ -246,25 +288,36 @@ def decode_hardware_results(
     noise = None,
 ) -> tuple[float, float]:
     """
-    Decodes the output of run_qiskit() or run_qrisp() via your desired decoder.
+    Decode a run and return its logical error probability.
 
-    NOTE: Other parameters can be important for this function, such as a noise model.
-    If you decode with a detector error model (DEM): the DEM’s detectors must match the circuit that ran.
+    How it works
+    ------------
+    The decoder (PyMatching, "minimum-weight perfect matching") looks at which
+    alarms (detectors) fired in a shot and finds the most likely set of
+    physical errors that explains them. From that it predicts whether the
+    logical value got flipped. If the prediction disagrees with what actually
+    happened (obs_flips), the shot is a logical error.
 
+    To know "how likely" each error is, the decoder needs a detector error model
+    (DEM). We get it by rebuilding the SAME circuit with noise annotations
+    (`noise`) and asking Stim for its DEM. Because it is the same generator, the
+    detectors are numbered identically to the hardware data.
 
-    Parameters
-    ----------
-    syndromes           : dict  output of run_qrisp() or load_hardware_results()
-    noise               : noise model for the matching weights (None -> DEFAULT_NOISE).
-                          The DEM comes from the same generator with this noise added,
-                          so its detectors match the circuit that ran.
+    Inputs
+    ------
+    syndromes : output of run_qrisp() or load_hardware_results()
+    noise     : noise model used only for decoder weights. None -> DEFAULT_NOISE
+                (0.3% everywhere). A float sets every channel; a dict sets them
+                individually. Better weights (from calibration) -> fewer
+                decoding mistakes.
 
-    Returns
+    Outputs
     -------
-    ler : float   estimated logical error probability for this round count (fit over several round counts to get the logical error rate, see README)
-    err : float   OPTIONAL 1-sigma statistical error
+    ler : logical error probability after `rounds` rounds, P_error.
+          (Not yet the per-round rate. Do several round counts and fit
+          2 P_error = 1 - (1 - 2 eps_L)^rounds, see README.)
+    err : 1-sigma statistical uncertainty, sqrt(P (1-P) / shots).
     """
-
     twin = make_qrisp_experiment(
         syndromes["distance"], syndromes["rounds"], basis=syndromes["basis"],
         no_reset=syndromes["no_reset"], noise=DEFAULT_NOISE if noise is None else noise,
@@ -276,15 +329,27 @@ def decode_hardware_results(
 
     matcher = pymatching.Matching.from_detector_error_model(
         twin.detector_error_model(decompose_errors=True))
-    predictions = matcher.decode_batch(det_events)
-    failures = np.any(predictions != obs_flips, axis=1)
+    predictions = matcher.decode_batch(det_events)        # (shots, 1) predicted flips
+    failures = np.any(predictions != obs_flips, axis=1)   # True = decoder got it wrong
     ler = float(failures.mean())
     err = float(np.sqrt(ler * (1 - ler) / len(failures)))
     return ler, err
 
 
 def summarize_hardware_results(syndromes: dict, noise=None) -> dict:
-    """Decoded and undecoded logical error, plus how often detectors fire."""
+    """The numbers to look at after every run.
+
+    logical_error           : P_error after decoding (lower is better)
+    logical_error_sigma     : its 1-sigma uncertainty
+    undecoded_logical_error : how often the logical value flipped with NO
+                              correction. If decoding does not beat this, the
+                              decoder or the circuit is wrong.
+    mean_detector_rate      : average fraction of shots in which an alarm fired.
+                              ~0 = suspiciously quiet; ~0.5 = pure noise, the
+                              code is overwhelmed.
+    detector_rates          : the same per detector, in experiment order. Map a
+                              high one back to its qubits to find the culprit.
+    """
     ler, err = decode_hardware_results(syndromes, noise)
     det = np.asarray(syndromes["det_events"], dtype=bool)
     obs = np.asarray(syndromes["obs_flips"], dtype=bool)
@@ -298,6 +363,10 @@ def summarize_hardware_results(syndromes: dict, noise=None) -> dict:
     }
 
 
+# Command line:
+#   python run_on_hardware.py --rounds 1 --dry-run         validate, no credits
+#   python run_on_hardware.py --rounds 3 --basis X         real run (default 2000 shots)
+#   python run_on_hardware.py --load results/<run>.json    re-decode a saved run
 if __name__ == "__main__":
     import argparse
     import json

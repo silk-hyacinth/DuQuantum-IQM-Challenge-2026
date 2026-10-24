@@ -159,32 +159,61 @@ def make_qiskit_circuit(
 
     return
 
-#: CZ order per ancilla type, as (dx, dy) offsets to the data qubit touched in
-#: each of the four layers. Same hook-safe schedule as Stim's rotated generator.
+# ═════════════════════════════════════════════════════════════════════════════
+#  DuQuantum Build 1: the Qrisp surface code generator
+#
+#  Everything from here down to make_qrisp_experiment() is ours. The three
+#  stubs above (make_stim_circuit, make_qiskit_circuit) are the untouched
+#  templates from main. See BUILD_1_DESIGN.md for the plain-language tour.
+#
+#  The picture to keep in mind (d = 3; numbers are qubit indices):
+#
+#     x:  0    1    2    3    4    5    6
+#   y=0             X9
+#   y=1       D0        D1        D2          D  = data qubit (holds the info)
+#   y=2            Z13       X10       Z14    X/Z = ancilla ("watchman") that
+#   y=3       D3        D4        D5               checks the parity of its
+#   y=4  Z15       X11       Z16                   diagonal data neighbours
+#   y=5       D6        D7        D8
+#   y=6                      X12
+#
+#  9 data + 4 X ancillas + 4 Z ancillas = 17 qubits.
+#  Logical Z = parity of the top row D0 D1 D2; logical X = left column D0 D3 D6.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# In each round every ancilla does a CZ with each of its data neighbours, one
+# neighbour per "layer" (4 layers). The ORDER matters: a bad order lets one
+# ancilla fault spread into two data errors ("hook error") lined up with the
+# logical operator, silently turning a d=3 code into a d=2 code.
+# These are the (dx, dy) offsets to the data qubit touched in layers 1..4,
+# the same hook-safe order Stim's own generator uses (X and Z differ in the
+# middle two layers). check_surface_code.py verifies the distance stays 3.
 _X_ORDER = ((1, 1), (-1, 1), (1, -1), (-1, -1))
 _Z_ORDER = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 
 
 @dataclass(frozen=True)
 class SurfaceCodeLayout:
-    """Rotated surface code on abstract coordinates.
+    """Where every qubit is and who talks to whom, for one code distance.
 
-    Data qubits sit at odd (x, y), ancillas at even (x, y). Every coupling is a
-    diagonal step, which is a nearest-neighbour edge of a square lattice rotated
-    by 45 degrees (see ``lattice_coords``). Qubit index i is position i of the
-    Qrisp QuantumArray and of the exported Stim circuit: data first, then X
-    ancillas, then Z ancillas.
+    Coordinates: data qubits at odd (x, y), ancillas at even (x, y), so every
+    data-ancilla pair is a diagonal step. Rotate the picture 45 degrees and the
+    diagonals become the horizontal/vertical edges of a square grid, which is
+    exactly Garnet's wiring (``lattice_coords`` gives those grid coordinates).
+
+    Numbering: qubit index i is wire i of the Qrisp circuit and of the exported
+    Stim circuit. Data first (0..d²-1), then X ancillas, then Z ancillas.
     """
 
     distance: int
     coords: tuple            # (x, y) per qubit index
-    data: tuple              # qubit indices
-    x_ancillas: tuple
-    z_ancillas: tuple
-    support: dict            # ancilla index -> sorted data indices it checks
-    layers: tuple            # 4 layers of (ancilla, data) CZ pairs
-    logical_z: tuple         # data indices of a Z string commuting with X checks
-    logical_x: tuple         # data indices of an X string commuting with Z checks
+    data: tuple              # qubit indices of the data qubits
+    x_ancillas: tuple        # ancillas that measure X-parity (catch phase flips)
+    z_ancillas: tuple        # ancillas that measure Z-parity (catch bit flips)
+    support: dict            # ancilla index -> sorted data indices it checks (2 or 4)
+    layers: tuple            # 4 layers of (ancilla, data) CZ pairs, run in this order
+    logical_z: tuple         # data qubits whose combined Z value IS the logical bit
+    logical_x: tuple         # data qubits whose combined X value IS the logical phase
 
     @property
     def num_qubits(self) -> int:
@@ -200,23 +229,32 @@ class SurfaceCodeLayout:
 
 
 def rotated_surface_code_layout(distance: int) -> SurfaceCodeLayout:
-    """Geometry, stabilizer supports, CZ schedule and logical operators for a distance-d rotated code."""
+    """Build the SurfaceCodeLayout for a distance-d rotated surface code.
+
+    Input : distance d (>= 2). d=3 -> 17 qubits, d=5 -> 49 qubits.
+    Output: SurfaceCodeLayout (positions, which ancilla checks which data
+            qubits, the 4-layer CZ schedule, and the logical operators).
+    """
     if distance < 2:
         raise ValueError("distance must be at least 2")
     edge = 2 * distance
 
+    # d x d grid of data qubits at odd coordinates.
     data_xy = [(x, y) for y in range(1, edge, 2) for x in range(1, edge, 2)]
     data_set = set(data_xy)
 
+    # Candidate ancillas at every even coordinate; checkerboard into X and Z.
     x_xy, z_xy = [], []
     for y in range(0, edge + 1, 2):
         for x in range(0, edge + 1, 2):
             kind = "X" if ((x + y) // 2) % 2 == 1 else "Z"
-            # X checks terminate on the top/bottom boundaries, Z checks on left/right.
+            # On the border keep only half-checks of the right type: X checks
+            # on the top/bottom edges, Z checks on the left/right edges.
             if y in (0, edge) and kind != "X":
                 continue
             if x in (0, edge) and kind != "Z":
                 continue
+            # Corners would touch only one data qubit; those are not checks.
             neighbours = [(x + dx, y + dy) for dx, dy in _X_ORDER if (x + dx, y + dy) in data_set]
             if len(neighbours) < 2:
                 continue
@@ -229,6 +267,8 @@ def rotated_surface_code_layout(distance: int) -> SurfaceCodeLayout:
     x_anc = tuple(range(n_data, n_data + len(x_xy)))
     z_anc = tuple(range(n_data + len(x_xy), len(coords)))
 
+    # For each ancilla, walk its 4 diagonal neighbours in the hook-safe order;
+    # layer k collects every (ancilla, data) CZ that happens in step k.
     support, layers = {}, [[] for _ in range(4)]
     for a in x_anc + z_anc:
         ax, ay = coords[a]
@@ -241,6 +281,10 @@ def rotated_surface_code_layout(distance: int) -> SurfaceCodeLayout:
                 touched.append(d)
         support[a] = tuple(sorted(touched))
 
+    # The logical bit is the parity of a straight line of data qubits across
+    # the patch. A valid logical Z line must overlap every X check on an even
+    # number of qubits (so measuring checks never disturbs it), and likewise
+    # for logical X vs Z checks. We pick the first row/column that qualifies.
     def commutes(string, checks):
         return all(len(set(string) & set(support[a])) % 2 == 0 for a in checks)
 
@@ -264,7 +308,13 @@ def rotated_surface_code_layout(distance: int) -> SurfaceCodeLayout:
 
 
 def _resolve_noise(noise: Union[None, float, dict]) -> dict:
-    """Map None / a single strength / a DEFAULT_NOISE-style dict onto the four noise channels."""
+    """Turn the user's `noise` argument into one probability per noise channel.
+
+    None  -> all zero (the hardware circuit: real noise comes from the chip)
+    0.003 -> 0.3% on every channel
+    dict  -> per-channel values, same keys as DEFAULT_NOISE
+    These numbers only matter for simulation and for the decoder's weights.
+    """
     if noise is None:
         return dict.fromkeys(DEFAULT_NOISE, 0.0)
     if isinstance(noise, (int, float)):
@@ -276,7 +326,15 @@ def _resolve_noise(noise: Union[None, float, dict]) -> dict:
 
 
 def _sqrt_y_gate(dagger: bool = False):
-    """SQRT_Y (or its inverse): one PRX(±pi/2, pi/2) pulse on IQM hardware, and a Clifford Stim understands."""
+    """SQRT_Y (or its inverse): a quarter turn about the Y axis.
+
+    Why this gate: it is the ONE single-qubit gate we need. It swaps the Z and
+    X bases (so a CZ can act like a CNOT), it is exactly one native PRX pulse
+    on IQM hardware (no extra pulses), and Stim understands it (name "sy" /
+    "sy_dg" -> SQRT_Y / SQRT_Y_DAG), so the same circuit exports to Stim for
+    simulation and decoding. Qrisp has no built-in sy, so we rename an RY(±pi/2)
+    gate; Qrisp's convert_to_prx later turns it into a single PRX.
+    """
     import qrisp.circuit.standard_operations as std_ops
 
     op = std_ops.RYGate(-np.pi / 2 if dagger else np.pi / 2)
@@ -346,18 +404,34 @@ def make_qrisp_experiment(
     p = _resolve_noise(noise)
     ancillas = layout.ancillas
     x_set = set(layout.x_ancillas)
+    # Z memory protects a bit value: Z checks catch the bit flips that would
+    # corrupt it, and logical Z is what we read at the end. X memory is the
+    # mirror image (protects a phase, uses X checks and logical X).
     memory_checks = layout.z_ancillas if basis == "Z" else layout.x_ancillas
     logical = layout.logical_z if basis == "Z" else layout.logical_x
     sy, sy_dg = _sqrt_y_gate(), _sqrt_y_gate(dagger=True)
 
+    # experiment() is not run directly. Qrisp "traces" it (records every gate,
+    # measurement and parity() call) to produce (a) the hardware circuit,
+    # (b) a Stim circuit for simulation/decoding, and (c) a post-processing
+    # function that turns raw hardware bits into detector / observable values.
     def experiment():
+        # All qubits start in |0>. Index i of this array = code qubit i.
         q = QuantumArray(qtype=QuantumBool(), shape=(layout.num_qubits,))
 
         def gate1(op, i):
+            # One single-qubit gate, plus (simulation only) its noise.
             append_operation(op, [q[i]])
             if p["after_clifford_depolarization"]:
                 stim_noise("DEPOLARIZE1", p["after_clifford_depolarization"], q[i])
 
+        # THE FRAME TRICK. Garnet's only two-qubit gate is CZ. An X check needs
+        # a CNOT (ancilla controls data), and CNOT = (rotate data) CZ (rotate
+        # data back). Instead of rotating back and forth around every CZ, we
+        # remember which basis ("frame") each data qubit is currently viewed in
+        # and only pay a pulse when the next check needs the other frame. The
+        # frame carries over between layers and rounds. For d=3 this costs 2
+        # pulses per data qubit per round instead of 4-8.
         def set_frame(d, want):
             # Physical |0> in the X frame is logical |+>, and a Z readout there is an X readout.
             if frame[d] != want:
@@ -365,21 +439,27 @@ def make_qrisp_experiment(
                 frame[d] = want
 
         def noise1(name, key, qubits):
+            # Simulation-only noise on a group of qubits; ignored by hardware.
             if p[key]:
                 for i in qubits:
                     stim_noise(name, p[key], q[i])
 
+        # Starting the data qubits "in the X frame" makes |0> mean |+>, which
+        # is how the X-memory experiment prepares its logical state for free.
         frame = dict.fromkeys(layout.data, basis)
-        raw = {a: [] for a in ancillas}
+        raw = {a: [] for a in ancillas}     # raw[a][k-1] = ancilla a's result in round k
         detectors = []
 
         for k in range(1, rounds + 1):
+            # ---- one stabilizer round ---------------------------------------
             if k > 1 and not no_reset:
                 for a in ancillas:
                     reset(q[a])
                 noise1("X_ERROR", "after_reset_flip_probability", ancillas)
             noise1("DEPOLARIZE1", "before_round_data_depolarization", layout.data)
 
+            # Ancilla into the X basis, 4 CZ layers, ancilla back. After this
+            # each ancilla holds the parity of its data neighbours.
             for a in ancillas:
                 gate1(sy, a)
             for layer in layout.layers:
@@ -392,17 +472,32 @@ def make_qrisp_experiment(
             for a in ancillas:
                 gate1(sy_dg, a)
 
+            # Read the 8 watchmen. The barrier stops the compiler from sliding
+            # next-round gates in front of this round's measurements.
             noise1("X_ERROR", "before_measure_flip_probability", ancillas)
             for a in ancillas:
                 raw[a].append(measure(q[a]))
             barrier(q)
+            # Optional deliberate wait between rounds (hardware only, needs
+            # pulse-level access). Used to measure how idling hurts.
             if idle_time and k < rounds:
                 for a in ancillas:
                     delay(q[a], duration=float(idle_time))
 
+            # ---- detectors ("alarms") for this round -------------------------
+            # A detector should read 0 when nothing went wrong. parity(...,
+            # expectation=0) says "the XOR of these measurements should be 0".
+            #
+            # NO-RESET ALGEBRA. Without reset, an ancilla is never cleared, so
+            # its raw result is m_k = s_k XOR m_(k-1) where s_k is this round's
+            # true syndrome. We want "did the syndrome change?" = s_k XOR s_(k-1),
+            # which works out to m_k XOR m_(k-2) (and just m_2 in round 2,
+            # because m_0 = 0). With reset it is the familiar m_k XOR m_(k-1).
             for a in ancillas:
                 m = raw[a]
                 if k == 1:
+                    # Round 1: only checks of the memory basis are known to be 0
+                    # (data starts in |0...0> for Z memory, |+...+> for X memory).
                     if a in memory_checks:
                         detectors.append(parity(m[0], expectation=0))
                 elif no_reset:
@@ -411,21 +506,29 @@ def make_qrisp_experiment(
                 else:
                     detectors.append(parity(m[-1], m[-2], expectation=0))
 
+        # ---- final data readout ---------------------------------------------
+        # Rotate every data qubit back to the memory basis and measure it.
         for d in layout.data:
             set_frame(d, basis)
         noise1("X_ERROR", "before_measure_flip_probability", layout.data)
         data_meas = {d: measure(q[d]) for d in layout.data}
 
+        # Last detectors: rebuild each memory-basis check from the data
+        # readout and compare with the last syndrome the ancilla reported
+        # (with no-reset that last syndrome is m_last XOR m_(last-1)).
         for a in memory_checks:
             m = raw[a]
             last = (m[-1], m[-2]) if (no_reset and rounds >= 2) else (m[-1],)
             detectors.append(parity(*[data_meas[d] for d in layout.support[a]], *last, expectation=0))
 
+        # The observable: the logical value itself (parity of the logical
+        # line). We prepared logical 0, so it should read 0. If it reads 1,
+        # the logical bit flipped; the decoder's job is to predict that flip.
         observable = parity(*[data_meas[d] for d in logical], expectation=0, observable=True)
         return detectors, [observable]
 
     exp = DetectorExperiment(experiment)
-    exp.layout = layout
+    exp.layout = layout     # handy for placement and for mapping detectors to qubits
     return exp
 
 
