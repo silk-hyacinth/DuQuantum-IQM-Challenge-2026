@@ -100,8 +100,41 @@ def make_stim_circuit(
     -------
     stim.Circuit
     """
+    circ = stim.Circuit.generated("surface_code:rotated_memory_z",
+                                  distance=distance, rounds=rounds, **(noise or {}))
+    if not no_reset:
+        return circ
 
-    return
+    out = stim.Circuit()
+    n = 0          # number of measurements so far
+    last = {}      # qubit -> index of its most recent measurement
+    prev = {}      # ancilla measurement index -> index of that ancilla's previous measurement
+    for inst in circ.flattened():
+        assert isinstance(inst, stim.CircuitInstruction)
+        
+        if inst.name in ("M", "MR"):
+            for t in inst.targets_copy():       # each qubit being measured
+                if inst.name == "MR":           
+                    prev[n] = last.get(t.value) # remember: measurement #n's previous reading was #last[q]
+                last[t.value] = n               # this qubit's latest measurement is now #n
+                n += 1
+            inst = stim.CircuitInstruction("M", inst.targets_copy(), inst.gate_args_copy())   # change MR → M (no reset)
+        # above: lookup table for each measurement
+        
+        elif inst.name in ("DETECTOR", "OBSERVABLE_INCLUDE"):
+            recs = set()
+            for t in inst.targets_copy():
+                j = n + t.value                  # t.value is negative ("k measurements ago"); turn rec[-k] into absolute index
+                recs ^= {j}                      # include reading j
+                if prev.get(j) is not None:      # answer = this reading XOR previous reading
+                    recs ^= {prev[j]}
+            inst = stim.CircuitInstruction(inst.name, [stim.target_rec(j - n) for j in sorted(recs)],
+                                           inst.gate_args_copy())
+        out.append(inst) # idea is just to xor each checker with the previous reading to reset it in software
+    return out
+
+    
+    
 
 def get_circuit_info(circuit: stim.Circuit) -> dict:
     """
