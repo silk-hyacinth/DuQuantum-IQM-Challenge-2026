@@ -1,6 +1,7 @@
 # Build 1 design document: a surface code on IQM Garnet, in Qrisp
 
-Branch: `build-1-qrisp-surface-code` · Team: DuQuantum · IQM QEC Challenge, Duke, Oct 24–25 2026
+Branch: `build-1-qrisp-surface-code`, with the decoupling result on
+`dd-dynamical-decoupling` · Team: DuQuantum · IQM QEC Challenge, Duke, Oct 24–25 2026
 
 This document explains everything on this branch for someone who has never
 touched quantum error correction. Read it top to bottom once; after that the
@@ -25,15 +26,15 @@ sections work as a reference.
   - Without error correction, 22% of shots had the wrong logical value.
   - After decoding, 9.6% ± 0.7% did.
   - So error correction more than halved the error on real hardware.
-- **Baseline logical error rate** (job `01a16fb3`; rounds 1, 2, 3, 4, 6, 8 in
-  both bases; 5,000 shots each; section 7.2):
-  - **\(\varepsilon_L\) = 8.55% ± 0.12% per round (Z memory)**
-  - **\(\varepsilon_L\) = 8.33% ± 0.12% per round (X memory)**
-
-  Every improvement gets measured against these two numbers. Lower is better.
-- **Biggest error source** is data qubits losing their phase while they wait for
-  the ancillas to be measured. The fix to try first is IQM's dynamical
-  decoupling option.
+- **First baseline** (job `01a16fb3`, 16:57; section 7.2):
+  \(\varepsilon_L\) = 8.55% ± 0.12% per round (Z) and 8.33% ± 0.12% (X).
+- **Dynamical decoupling, measured the same evening** (branch
+  `dd-dynamical-decoupling`, section 7.3). A fresh baseline run immediately
+  before it was worse, because the chip had drifted: 12.73% (Z) and 9.75% (X).
+  Turning on IQM's dynamical decoupling, with nothing else changed, gave
+  **7.76% ± 0.11% (Z) and 7.32% ± 0.11% (X)**: 39% and 25% lower than the
+  paired baseline, and lower than the first baseline too. Same calibration
+  set for both jobs.
 - **Teammates:** branch off this branch and follow section 9. It lists the
   exact commands to test an idea and compare it with the baseline.
 
@@ -573,6 +574,62 @@ Summary file: `results/sweeps/20261024-165743_baseline.json`
 - **The ± values** come from the fit and assume the model is exact. Treat
   them as a lower bound on the uncertainty.
 
+### 7.3 Dynamical decoupling: the first measured improvement
+
+Branch `dd-dynamical-decoupling`. What changed is one compile setting and
+nothing in the circuit: `dd_mode=ENABLED`, IQM's default decoupling strategy,
+heralding still off. The gate counts are identical to the baseline (24 CZ per
+round, one PRX per single-qubit gate, zero SWAPs). IQM inserts the extra
+refocusing pulses itself, into the gaps where data qubits would otherwise
+just wait.
+
+Because the chip drifts, the comparison is a **pair run back to back** on
+calibration set `a18a947f…`, not the 16:57 baseline above.
+
+| | Paired baseline, job `01a16fe1`, 17:47 | With decoupling, job `01a16fe3`, 17:49 |
+|---|---|---|
+| \(\varepsilon_L\) Z (README fit) | 0.1273 ± 0.0018 | **0.0776 ± 0.0011** |
+| \(\varepsilon_L\) X | 0.0975 ± 0.0014 | **0.0732 ± 0.0011** |
+| Amplitude fit, Z | 0.1255 (A = 0.99) | 0.0858 (A = 1.06) |
+| Amplitude fit, X | 0.1101 (A = 1.09) | 0.0895 (A = 1.11) |
+
+```
+eps_L[Z]: B - A = -0.0498  (-23 sigma, -39%)
+eps_L[X]: B - A = -0.0244  (-14 sigma, -25%)
+```
+
+Files: `results/sweeps/20261024-174744_baseline.json` and
+`results/sweeps/20261024-175014_dd.json`.
+
+![Paired baseline](results/sweeps/20261024-174744_baseline.png)
+
+![With dynamical decoupling](results/sweeps/20261024-175014_dd.png)
+
+**What this means:**
+
+- **Decoupling is a real improvement, not noise.** 39% less logical error per
+  round in Z and 25% in X, tens of standard deviations past the fit
+  uncertainty. Both the README fit and the amplitude fit agree on the
+  direction.
+- **It beats the earlier baseline too.** 7.76% (Z) and 7.32% (X) are below
+  the 16:57 numbers (8.55% and 8.33%), so this is not "the chip got worse and
+  decoupling recovered some of it".
+- **The circuit itself got cleaner, not just the decoder.** At 1 round in Z
+  the undecoded error fell from 22.5% to 15.1%, and the detector rate from
+  0.139 to 0.108. Fewer alarms fired, which is what you expect if idle phase
+  errors are being cancelled before they happen.
+- **Z gained more than X, and that fits the physics.** In the paired baseline
+  Z had become much worse than X (12.7% vs 9.8%). Decoupling pulled them back
+  together (7.8% vs 7.3%). Z-memory data qubits spend half their time in the
+  X frame, so slow phase noise hits them too, and that noise is exactly what
+  a refocusing pulse removes.
+- **The chip moved between the two baselines.** Same circuit, same
+  calibration set, 50 minutes apart: Z went from 8.6% to 12.7%. A comparison
+  against an old baseline would have exaggerated or hidden the effect. This
+  is why section 9 says to re-run the baseline in the same session.
+- **What decoupling does not fix.** Readout errors and CZ errors are still
+  there. \(\varepsilon_L\) around 7.5% is the new number to beat.
+
 ---
 
 ## 8. Status against the judging criteria
@@ -581,7 +638,7 @@ Summary file: `results/sweeps/20261024-165743_baseline.json`
 |---|---|---|---|
 | Correctness | 30% | Self-test: zero noiseless alarms, distance 3, both bases, no-reset algebra proven; hardware decoding beats no decoding | Run X memory on hardware |
 | Hardware fit / SWAPs | 30% | Exhaustive search shows Garnet's only fitting set; `fixed_layout` refuses any non-native CZ; 24 CZ per round, one PRX per single-qubit gate | Present this clearly in the submission |
-| LER statistics | 20% | Baseline sweep in Z and X with fitted \(\varepsilon_L\) and error bars (section 7.2) | Improvements measured against it; maybe more shots or round counts |
+| LER statistics | 20% | Two baselines plus a paired decoupling sweep, all with fitted \(\varepsilon_L\) and error bars (sections 7.2, 7.3) | More ideas measured the same way |
 | Flexibility | 20% | Z/X, reset/no-reset, any distance, noise dict, idle delays, compilation options hook, offline calibration | Calibration-weighted decoder, dynamical decoupling and heralding comparison, pulse-level work if PulLA is enabled |
 
 ---
@@ -655,17 +712,21 @@ eps_L[Z]: A 0.0855 ± 0.0012   B 0.0880 ± 0.0013   B - A = +0.0024 (+1.4 sigma,
 
 | Idea | Kind | Sweep file | \(\varepsilon_L\) Z | \(\varepsilon_L\) X | Verdict |
 |---|---|---|---|---|---|
-| Baseline | n/a | `20261024-165743_baseline.json` | 0.0855 ± 0.0012 | 0.0833 ± 0.0012 | Reference |
+| Baseline, 16:57 | n/a | `20261024-165743_baseline.json` | 0.0855 ± 0.0012 | 0.0833 ± 0.0012 | First reference. Same calibration set as the rows below, but the chip was quieter |
 | Uniform Garnet-like decoder weights (`decoders:garnet_uniform`) | A | `20261024-165945_baseline_garnet_uniform.json` | 0.0880 | 0.0880 | **Worse**; blanket weights mislead the decoder |
+| Paired baseline, 17:47 | n/a | `20261024-174744_baseline.json` | 0.1273 ± 0.0018 | 0.0975 ± 0.0014 | Same circuit, 50 min later. Use this, not the 16:57 row, to judge decoupling |
+| Dynamical decoupling (`--dd`) | B | `20261024-175014_dd.json` | **0.0776 ± 0.0011** | **0.0732 ± 0.0011** | **Best so far.** −39% (Z) and −25% (X) versus the paired baseline, 14–23 sigma. Also below the 16:57 baseline |
 
 Add a row for every idea you test, including the ones that fail. Failures are
 evidence for the "what limits the logical error rate" bonus.
 
 ### 9.5 Ideas worth trying, roughly in order of expected payoff
 
-1. **Dynamical decoupling (B):** `--dd`. Idle phase loss is about 68% of the
-   estimated fault budget, and echo T2 is about twice Ramsey T2. Our estimate
-   drops idle faults from about 0.85 to about 0.35 per round.
+1. **Dynamical decoupling (B): done, and it worked.** See section 7.3.
+   `--dd` cut \(\varepsilon_L\) by 39% in Z and 25% in X against a baseline
+   run two minutes earlier. The new numbers to beat are 0.0776 (Z) and
+   0.0732 (X). A repeat on a later calibration should be paired with its own
+   baseline, because the chip drifted 4 points in an hour.
 2. **Per-qubit decoder weights (A):** build a detector error model from
    `syndromes["calibration"]` so the decoder knows QB2 and QB6 are unreliable.
    The blanket version failed, which makes the per-qubit version the
@@ -695,6 +756,10 @@ evidence for the "what limits the logical error rate" bonus.
   weights are untested.
 - The \(\varepsilon_L\) **error bars come from the fit** and assume the model
   is exact. Treat them as a lower bound.
+- **The chip moves within one calibration set.** The 16:57 baseline and the
+  17:47 baseline used calibration `a18a947f…` and the same circuit, and
+  \(\varepsilon_L\) went from 8.6% to 12.7% (Z). Always pair a change with a
+  baseline from the same session (section 7.3).
 - **Comparing hardware runs from different calibration sets** mixes your
   change with chip drift. Re-run the baseline in the same session.
 - The first run's saved `budget_per_round` (in its JSON) was computed with the

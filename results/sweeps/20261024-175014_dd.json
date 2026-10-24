@@ -1,0 +1,146 @@
+{
+ "points": [
+  {
+   "basis": "Z",
+   "rounds": 1,
+   "shots": 5000,
+   "p_error": 0.0666,
+   "sigma": 0.003526030062265494,
+   "undecoded": 0.1512,
+   "detector_rate": 0.1078,
+   "run_file": "results/20261024-174956_garnet_d3_r1_Z_dd_01a16fe3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 2,
+   "shots": 5000,
+   "p_error": 0.125,
+   "sigma": 0.004677071733467427,
+   "undecoded": 0.2274,
+   "detector_rate": 0.15355,
+   "run_file": "results/20261024-174956_garnet_d3_r2_Z_dd_01a16fe3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 3,
+   "shots": 5000,
+   "p_error": 0.198,
+   "sigma": 0.005635530143651084,
+   "undecoded": 0.3044,
+   "detector_rate": 0.177225,
+   "run_file": "results/20261024-174956_garnet_d3_r3_Z_dd_01a16fe3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 4,
+   "shots": 5000,
+   "p_error": 0.25,
+   "sigma": 0.006123724356957945,
+   "undecoded": 0.3486,
+   "detector_rate": 0.19231875,
+   "run_file": "results/20261024-174956_garnet_d3_r4_Z_dd_01a16fe3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 6,
+   "shots": 5000,
+   "p_error": 0.3344,
+   "sigma": 0.00667198081532014,
+   "undecoded": 0.4236,
+   "detector_rate": 0.21308333333333335,
+   "run_file": "results/20261024-174956_garnet_d3_r6_Z_dd_01a16fe3.json"
+  },
+  {
+   "basis": "Z",
+   "rounds": 8,
+   "shots": 5000,
+   "p_error": 0.3906,
+   "sigma": 0.006899733907912681,
+   "undecoded": 0.448,
+   "detector_rate": 0.22558125,
+   "run_file": "results/20261024-174956_garnet_d3_r8_Z_dd_01a16fe3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 1,
+   "shots": 5000,
+   "p_error": 0.0462,
+   "sigma": 0.002968688599365046,
+   "undecoded": 0.1288,
+   "detector_rate": 0.12325,
+   "run_file": "results/20261024-174956_garnet_d3_r1_X_dd_01a16fe3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 2,
+   "shots": 5000,
+   "p_error": 0.1182,
+   "sigma": 0.0045657148399785115,
+   "undecoded": 0.2228,
+   "detector_rate": 0.1653875,
+   "run_file": "results/20261024-174956_garnet_d3_r2_X_dd_01a16fe3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 3,
+   "shots": 5000,
+   "p_error": 0.1922,
+   "sigma": 0.005572417069818088,
+   "undecoded": 0.2874,
+   "detector_rate": 0.18680833333333333,
+   "run_file": "results/20261024-174956_garnet_d3_r3_X_dd_01a16fe3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 4,
+   "shots": 5000,
+   "p_error": 0.2518,
+   "sigma": 0.006138350918609981,
+   "undecoded": 0.3302,
+   "detector_rate": 0.20150625,
+   "run_file": "results/20261024-174956_garnet_d3_r4_X_dd_01a16fe3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 6,
+   "shots": 5000,
+   "p_error": 0.3346,
+   "sigma": 0.006672972950642016,
+   "undecoded": 0.4068,
+   "detector_rate": 0.220175,
+   "run_file": "results/20261024-174956_garnet_d3_r6_X_dd_01a16fe3.json"
+  },
+  {
+   "basis": "X",
+   "rounds": 8,
+   "shots": 5000,
+   "p_error": 0.3844,
+   "sigma": 0.006879486027313377,
+   "undecoded": 0.4458,
+   "detector_rate": 0.237409375,
+   "run_file": "results/20261024-174956_garnet_d3_r8_X_dd_01a16fe3.json"
+  }
+ ],
+ "fits": {
+  "X": {
+   "eps_L": 0.07319179044095583,
+   "eps_L_sigma": 0.0010629801026416563,
+   "eps_L_amp": 0.08951826292481084,
+   "eps_L_amp_sigma": 0.001852602757082361,
+   "amp": 1.1103181392421226,
+   "amp_sigma": 0.010096407082092357
+  },
+  "Z": {
+   "eps_L": 0.07755440260548005,
+   "eps_L_sigma": 0.0011269128987034197,
+   "eps_L_amp": 0.08584141636148465,
+   "eps_L_amp_sigma": 0.001954075423163325,
+   "amp": 1.058446241429115,
+   "amp_sigma": 0.011131067513818751
+  }
+ },
+ "label": "dd",
+ "job_id": "01a16fe3-9d84-753c-9f41-be11d3dec3c5",
+ "calibration_set_id": "a18a947f-0408-4628-81ea-1715637e434f",
+ "compilation_options": "CircuitCompilationOptions(max_circuit_duration_over_t2=0.0, heralding_mode=<HeraldingMode.NONE: 'none'>, move_gate_validation=<MoveGateValidationMode.STRICT: 'strict'>, move_gate_frame_tracking=<MoveGateFrameTrackingMode.FULL: 'full'>, active_reset_cycles=None, dd_mode=<DDMode.ENABLED: 'enabled'>, dd_strategy=None)"
+}
