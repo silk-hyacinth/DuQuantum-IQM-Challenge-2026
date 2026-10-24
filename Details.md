@@ -164,7 +164,7 @@ On real Garnet the code works for 1 round, then breaks at the first mid-circuit 
 
 1. **Back-to-back track comparison:** `--track qiskit` then `--track qrisp`, same rounds, shots and DD setting, a few minutes apart. Tells whether the native-CZ circuit with barriers really adds less error per round.
 2. **X-memory on Garnet** on the Qiskit track (`--basis X`), with and without DD.
-3. **Calibration-weighted decoding:** run with `--noise calibration` and compare against `--noise uniform` on the same shots (re-decoding a saved file still needs a small `--load` option).
+3. **Per-qubit decoder weights:** `--decoder qubit_calibrated` (in `decoding.py`, both tracks). On the saved 17:47 sweeps, re-decoded with no new QPU time, it lowered ε\_L from 12.6% to 10.9% (Z) and 9.9% to 9.6% (X). The decoupling runs stayed at 7.9% and 7.3%. Weighting only the worst four qubits made Z worse, and using the full idle estimate helped Z but raised X-with-DD from 7.3% to 9.1%. `--noise calibration` is the full-idle version. Re-decoding a saved `run_experiment` file in place still needs a `--load` option.
 4. **Tiny diagnostic circuits:** one qubit measured twice (readout disturbance), and one data qubit idling while a neighbour is read out (idle decay).
 5. **New decoders:** e.g. the union-find decoder from the `error_testing` branch, registered in `decoding.py`.
 6. **Ask IQM mentors** whether mid-circuit reset or feedback is available; it would remove the no-reset problem.

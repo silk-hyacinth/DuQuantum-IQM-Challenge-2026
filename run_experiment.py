@@ -88,7 +88,7 @@ def main():
     ap.add_argument("--noise", default="uniform",
                     help="decoder noise model: uniform | uniform:<p> | calibration (see noise_models.py)")
     ap.add_argument("--decoder", default="pymatching",
-                    help="decoder: pymatching, or module:function (see decoding.py)")
+                    help="pymatching | qubit_calibrated | module:function (see decoding.py)")
     ap.add_argument("--qc", default="garnet", help="quantum computer name on Resonance")
     ap.add_argument("--fake", action="store_true", help="use IQMFakeGarnet locally instead of hardware")
     ap.add_argument("--distance", type=int, default=3)
@@ -102,7 +102,8 @@ def main():
 
     # Check the cheap things before spending QPU time.
     parse_spec(args.noise)
-    get_decoder(args.decoder)
+    if args.decoder != "qubit_calibrated":
+        get_decoder(args.decoder)
     track = TRACKS[args.track]
     target = "fakegarnet" if args.fake else args.qc
 
@@ -147,8 +148,14 @@ def main():
     # 2. Decode each round count with the chosen noise model and decoder.
     for run, saved in zip(runs, record["runs"]):
         ctx = NoiseContext(calibration=calibration, qubit_map=run["qubit_map"], dd=args.dd)
-        noisy = add_noise(track.twin(args.distance, run["rounds"], args.basis), args.noise, ctx)
-        p, err, _ = logical_error(run["det_events"], run["obs_flips"], noisy, args.decoder)
+        twin = track.twin(args.distance, run["rounds"], args.basis)
+        if args.decoder == "qubit_calibrated":
+            # Noiseless twin: logical_error adds one weight per physical qubit.
+            p, err, _ = logical_error(run["det_events"], run["obs_flips"], twin,
+                                      args.decoder, context=ctx)
+        else:
+            noisy = add_noise(twin, args.noise, ctx)
+            p, err, _ = logical_error(run["det_events"], run["obs_flips"], noisy, args.decoder)
         undecoded = float(np.asarray(run["obs_flips"])[:, 0].mean())
         det_rate = float(np.asarray(run["det_events"]).mean())
         saved.update(p_error=p, p_error_err=err, undecoded=undecoded, detector_rate=det_rate)
