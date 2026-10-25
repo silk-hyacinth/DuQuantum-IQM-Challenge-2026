@@ -9,7 +9,7 @@ import os
 import numpy as np
 import pymatching
 
-TOKEN = ""   # leave empty and set the IQM_TOKEN environment variable instead (never commit a token)
+TOKEN = "VUsN5S5qYoOPs6ZMDPwT78bEL0j7DLEqkdHiKlpCCpsBoW59Nq1x4YiUeUL50FII"   # leave empty and set the IQM_TOKEN environment variable instead (never commit a token)
 SERVER_URL = "https://resonance.iqm.tech"
 
 def get_backend(quantum_computer: str = "garnet", token: str = None):
