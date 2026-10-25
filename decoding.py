@@ -16,6 +16,9 @@ Built-in
   pymatching         minimum-weight perfect matching (PyMatching)
   qubit_calibrated   the same matching, with each physical qubit weighted by its
                      own calibration. prepare_twin writes those weights before matching.
+  lookup_ml          maximum likelihood by lookup table: for every detector pattern, the
+                     more likely logical value under the noise model. Exact for small
+                     circuits, estimated from simulated shots for bigger ones.
 
 Adding a decoder
 ----------------
@@ -136,6 +139,81 @@ def qubit_calibrated_decoder(det_events: np.ndarray, dem: stim.DetectorErrorMode
 
 
 qubit_calibrated_decoder.prepare_twin = qubit_calibrated_circuit
+
+
+# ── Maximum likelihood by lookup table ──────────────────────────────────────
+#
+# For a given detector pattern (syndrome) s, the best possible guess is the logical
+# value L with the larger P(s, L) under the noise model. Matching approximates this;
+# a lookup table gets it exactly, but has 2^(detectors) rows, so:
+#   exact   : <= EXACT_MAX_BITS detectors+observables (d=3: up to 2 rounds).
+#             P(s, L) for every s and L, built one error mechanism at a time:
+#             each error with probability p either doesn't happen or XORs its
+#             detectors and observables into the state.
+#   sampled : bigger circuits. Estimate the table from LOOKUP_SAMPLES simulated
+#             shots of the same noise model; patterns never seen fall back to matching.
+
+EXACT_MAX_BITS = 21          # 2^21 states x 8 bytes = 16 MB
+LOOKUP_SAMPLES = 1_000_000
+
+
+def _error_masks(dem: stim.DetectorErrorModel):
+    """(probability, bitmask) per error mechanism; bits 0..n-1 detectors, then observables."""
+    n = dem.num_detectors
+    out = []
+    for inst in dem.flattened():
+        if inst.type != "error":
+            continue
+        mask = 0
+        for t in inst.targets_copy():
+            if t.is_relative_detector_id():
+                mask ^= 1 << t.val
+            elif t.is_logical_observable_id():
+                mask ^= 1 << (n + t.val)
+        out.append((inst.args_copy()[0], mask))
+    return out
+
+
+def _exact_table(dem: stim.DetectorErrorModel) -> np.ndarray:
+    """Most likely logical value(s), as an int, for every syndrome index."""
+    n, k = dem.num_detectors, dem.num_observables
+    prob = np.zeros(1 << (n + k))
+    prob[0] = 1.0
+    idx = np.arange(prob.size)
+    for p, mask in _error_masks(dem):
+        prob = (1.0 - p) * prob + p * prob[idx ^ mask]
+    return prob.reshape(1 << k, 1 << n).argmax(axis=0)        # row = observable value
+
+
+def _syndrome_index(det_events: np.ndarray) -> np.ndarray:
+    weights = (1 << np.arange(det_events.shape[1], dtype=np.int64))
+    return det_events.astype(np.int64) @ weights
+
+
+@register("lookup_ml")
+def lookup_ml_decoder(det_events: np.ndarray, dem: stim.DetectorErrorModel) -> np.ndarray:
+    """Maximum-likelihood decoding by lookup table (exact when small, sampled otherwise)."""
+    det_events = np.asarray(det_events, dtype=bool)
+    n, k = dem.num_detectors, dem.num_observables
+    if n + k <= EXACT_MAX_BITS:
+        best = _exact_table(dem)[_syndrome_index(det_events)]
+        return ((best[:, None] >> np.arange(k)) & 1).astype(bool)
+
+    # Sampled table: count, per syndrome, how often each logical value occurred.
+    sim_det, sim_obs, _ = dem.compile_sampler().sample(LOOKUP_SAMPLES)
+    sim_keys = np.packbits(sim_det, axis=1)
+    keys, inverse = np.unique(sim_keys, axis=0, return_inverse=True)
+    obs_val = (sim_obs.astype(np.int64) << np.arange(k)).sum(axis=1)
+    counts = np.zeros((len(keys), 1 << k), dtype=np.int64)
+    np.add.at(counts, (inverse.ravel(), obs_val), 1)
+    table = {kb.tobytes(): int(c.argmax()) for kb, c in zip(keys, counts)}
+
+    out = pymatching_decoder(det_events, dem)                  # fallback for unseen patterns
+    for i, kb in enumerate(np.packbits(det_events, axis=1)):
+        v = table.get(kb.tobytes())
+        if v is not None:
+            out[i] = (v >> np.arange(k)) & 1
+    return out
 
 
 def logical_error(det_events, obs_flips, noisy_twin: stim.Circuit, decoder: str = "pymatching"):

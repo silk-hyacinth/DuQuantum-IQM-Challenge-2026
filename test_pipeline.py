@@ -144,6 +144,23 @@ def test_noise_models_and_decoders(rounds=3, shots=5_000):
                 print(f"    {tname:6} noise={spec:13} decoder={dec}: sim P_error={p:.4f} +- {err:.4f}")
 
 
+
+def test_lookup_ml_beats_matching(rounds=2, shots=100_000):
+    """lookup_ml is exact maximum likelihood here (16 detectors), so on data drawn from
+    its own noise model it can't do worse than matching (beyond statistical noise)."""
+    print("\n[test] lookup_ml vs pymatching on simulated noise")
+    from tracks import TRACKS
+    from noise_models import NoiseContext, add_noise
+    from decoding import logical_error
+    for basis in ("Z", "X"):
+        noisy = add_noise(TRACKS["qiskit"].twin(3, rounds, basis), "uniform:0.01", NoiseContext())
+        det, obs = noisy.compile_detector_sampler().sample(shots, separate_observables=True)
+        p_mwpm, e, _ = logical_error(det, obs, noisy, "pymatching")
+        p_ml, _, _ = logical_error(det, obs, noisy, "lookup_ml")
+        assert p_ml <= p_mwpm + 2 * e, (p_ml, p_mwpm)
+        print(f"    {basis}-memory, {rounds} rounds: pymatching {p_mwpm:.4f}, lookup_ml {p_ml:.4f}")
+
+
 if __name__ == "__main__":
     test_stim_simulation()
     test_detectors_valid()
@@ -152,4 +169,5 @@ if __name__ == "__main__":
     test_fake_garnet_pipeline()
     test_qrisp_noiseless()
     test_noise_models_and_decoders()
+    test_lookup_ml_beats_matching()
     print("\nAll tests passed.")

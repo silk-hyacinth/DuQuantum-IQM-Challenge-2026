@@ -55,7 +55,7 @@ def get_calibration(backend=None, quantum_computer: str = "garnet") -> dict:
         return {**out, "source": "unavailable", "error": repr(e)}
 
 
-def get_physical_layout(qc_t, stim_circ, backend) -> list:
+def get_physical_layout(qc_t, stim_circ, backend, phys=None) -> list:
     """
     Which physical qubit each code qubit ran on, e.g.
     [{"stim_qubit": 1, "role": "data", "coords": [1, 1], "physical": "QB7"}, ...]
@@ -64,7 +64,8 @@ def get_physical_layout(qc_t, stim_circ, backend) -> list:
     data_q, anc_q = get_qubit_lists(stim_circ)
     stim_qubits = sorted(set(data_q) | set(anc_q))     # same ordering stim_to_qiskit uses
     coords = stim_circ.get_final_qubit_coordinates()
-    phys = qc_t.layout.initial_index_layout(filter_ancillas=True)
+    if phys is None:                                   # circuit qubit i -> chip qubit index
+        phys = qc_t.layout.initial_index_layout(filter_ancillas=True)
     out = []
     for i, sq in enumerate(stim_qubits):
         p = phys[i]

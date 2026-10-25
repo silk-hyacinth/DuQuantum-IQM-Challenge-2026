@@ -293,6 +293,11 @@ def main():
                     help="drop shots where a qubit did not start in 0 (hardware only)")
     ap.add_argument("--allow-swaps", action="store_true",
                     help="Qiskit track: if no SWAP-free placement exists, let the transpiler add SWAPs")
+    ap.add_argument("--exclude", nargs="+", default=[], metavar="QB",
+                    help="Qiskit track: chip qubits not to use, e.g. QB16 (implies SWAPs if needed)")
+    ap.add_argument("--optimize-qubits", action="store_true",
+                    help=f"Qiskit track: rerun, each time also excluding the worst qubit (by calibration), "
+                         f"until eps_L stops improving (at most {MAX_EXCLUDES} exclusions)")
     ap.add_argument("--basis", default="Z", choices=["Z", "X"],
                     help="Z-memory (bit-flip protection) or X-memory (phase-flip protection)")
     ap.add_argument("--tag", default="", help="extra label for the output file name")
@@ -333,13 +338,22 @@ def main():
 
     # ---- a new run ------------------------------------------------------------------
     track = TRACKS[args.track]
+    if (args.allow_swaps or args.exclude or args.optimize_qubits) and args.track != "qiskit":
+        raise SystemExit("--allow-swaps / --exclude / --optimize-qubits are for the Qiskit track "
+                         "(the Qrisp track pins qubits by hand)")
+    if args.optimize_qubits:
+        optimize_qubits(args, track, stamp)
+    else:
+        new_run(args, track, stamp, exclude=args.exclude, allow_swaps=args.allow_swaps or bool(args.exclude))
+
+
+def new_run(args, track, stamp, exclude=(), allow_swaps=False, label=""):
+    """One hardware (or fake) job for all round counts: run, decode, fit, save, plot."""
     target = "fakegarnet" if args.fake else args.qc
     if args.fake and (args.dd or args.herald):
         print("  note: --dd and --herald only act on real hardware; the fake backend ignores them")
-    if args.allow_swaps and args.track != "qiskit":
-        raise SystemExit("--allow-swaps is for the Qiskit track (the Qrisp track pins qubits by hand)")
     name = (f"{target}_{args.track}_d{args.distance}{'_X' if args.basis == 'X' else ''}"
-            f"{'_dd' if args.dd else ''}{'_herald' if args.herald else ''}{'_swaps' if args.allow_swaps else ''}"
+            f"{'_dd' if args.dd else ''}{'_herald' if args.herald else ''}{'_swaps' if allow_swaps else ''}{'_' + label if label else ''}"
             f"{'_' + args.tag if args.tag else ''}_{stamp}")
     json_path = f"results/{name}.json"
 
@@ -359,7 +373,7 @@ def main():
         raise SystemExit("--noise calibration needs calibration data, but it could not be fetched")
 
     record = dict(target=target, track=args.track, distance=args.distance, basis=args.basis,
-                  shots=args.shots, dd=args.dd, herald=args.herald, allow_swaps=args.allow_swaps, noise=args.noise, decoder=args.decoder,
+                  shots=args.shots, dd=args.dd, herald=args.herald, allow_swaps=allow_swaps, exclude=list(exclude), noise=args.noise, decoder=args.decoder,
                   started_at=datetime.now().isoformat(timespec="seconds"),
                   calibration_file=f"{name}_calibration.json", calibration=calibration,
                   status="running", runs=[])
@@ -373,7 +387,8 @@ def main():
     # 1. Run every round count as one job.
     runs = track.run(args.distance, args.rounds, args.basis, args.shots,
                      quantum_computer=args.qc, fake=args.fake, dd=args.dd, herald=args.herald,
-                     **({"allow_swaps": True} if args.allow_swaps else {}))
+                     **({"allow_swaps": True} if allow_swaps else {}),
+                     **({"exclude": list(exclude)} if exclude else {}))
     for run in runs:
         record["runs"].append({k: v for k, v in run.items() if k not in ("det_events", "obs_flips")})
     record["status"] = "decoding"
@@ -389,6 +404,79 @@ def main():
     save()
     plot_record(record, f"results/{name}.png")
     print(f"  Saved {json_path} and results/{name}.png")
+    return record, json_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  --optimize-qubits
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_EXCLUDES = 3        # each step is one more QPU job
+
+
+def headline_eps(record):
+    """(eps_L, error, which fit): the amplitude fit when there are >= 3 round counts."""
+    fits = record.get("fits", {})
+    kind = "amplitude" if "amplitude" in fits else "simple"
+    return fits[kind]["eps_L"], fits[kind]["eps_L_err"], kind
+
+
+def qubit_scores(record):
+    """Badness of every chip qubit the run used, from its calibration snapshot:
+    readout error + readout disturbance (1 - QNDness) + single-qubit gate error
+    + the worst CZ error among the couplers it shares with other used qubits."""
+    cal = record.get("calibration") or {}
+    used = set(record["runs"][0]["qubit_map"].values())
+    get = lambda key, q: (cal.get(key) or {}).get(q)
+    scores = {}
+    for q in used:
+        cz = [e for pair, e in (cal.get("cz") or {}).items()
+              if q in pair.split("__") and set(pair.split("__")) <= used]
+        qnd = get("qndness", q)
+        scores[q] = ((get("readout", q) or 0.0) + (1.0 - qnd if qnd is not None else 0.0)
+                     + (get("prx", q) or 0.0) + (max(cz) if cz else 0.0))
+    return scores
+
+
+def optimize_qubits(args, track, stamp):
+    """Greedy: run; exclude the worst used qubit; run again; stop when eps_L gets worse."""
+    excluded = list(args.exclude)
+    history = []
+    for step in range(MAX_EXCLUDES + 1):
+        label = f"opt{step}" + (f"_no{'-'.join(excluded)}" if excluded else "")
+        print(f"\n=== optimize-qubits step {step}: excluding {' '.join(excluded) or 'nothing'} ===")
+        try:
+            record, path = new_run(args, track, stamp, exclude=excluded, allow_swaps=True, label=label)
+        except RuntimeError as e:                     # e.g. too few connected qubits left
+            print(f"  stopping: {e}")
+            break
+        eps, err, kind = headline_eps(record)
+        history.append(dict(step=step, excluded=list(excluded), eps_L=eps, eps_L_err=err, fit=kind,
+                            extra_cz=[r.get("extra_cz", 0) for r in record["runs"]], file=path))
+        print(f"  step {step}: eps_L = {eps:.4f} ± {err:.4f} ({kind} fit), "
+              f"extra CZ from SWAPs per round count: {history[-1]['extra_cz']}")
+        if len(history) > 1 and eps >= history[-2]["eps_L"]:
+            print(f"  worse than step {step - 1} ({history[-2]['eps_L']:.4f}): stopping")
+            break
+        scores = qubit_scores(record)
+        worst = max((q for q in scores if q not in excluded), key=scores.get, default=None)
+        if worst is None:
+            break
+        top = sorted(scores, key=scores.get, reverse=True)[:3]
+        print("  worst qubits by calibration: " + ", ".join(f"{q} {scores[q]:.3f}" for q in top))
+        excluded.append(worst)
+
+    best = min(history, key=lambda h: h["eps_L"]) if history else None
+    summary = dict(target="fakegarnet" if args.fake else args.qc, distance=args.distance, basis=args.basis,
+                   rounds=args.rounds, shots=args.shots, dd=args.dd, steps=history, best=best)
+    out = f"results/optimize_qubits_{summary['target']}_d{args.distance}_{stamp}.json"
+    with open(out, "w") as f:
+        json.dump(summary, f, indent=1)
+    print("\n  step  excluded             eps_L")
+    for h in history:
+        print(f"  {h['step']:>4}  {' '.join(h['excluded']) or '-':<20} {h['eps_L']:.4f} ± {h['eps_L_err']:.4f}"
+              + ("   <- best" if h is best else ""))
+    print(f"  Saved {out}")
 
 
 if __name__ == "__main__":
