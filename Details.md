@@ -1,14 +1,14 @@
 # Surface Code Pipeline: Step by Step
 
-Oct 24, 2026 · @Ben
+Oct 24, 2026
 
 The pipeline stores one logical bit on 17 qubits, checks it for errors for a number of rounds, and reports how often the decoder still gets it wrong: the logical error rate per round, ε\_L.
 
 ## Overview
 
-&#91;embedded content: pipeline · 7 steps\]
+![Pipeline: step 1, step 2a or 2b, steps 3–6](docs/pipeline.png)
 
-The circuit from step 1 is used three times: converted for the chip (top row), as the XOR rules that turn raw bits into detections (step 5), and as a noisy copy that tells the decoder which errors are likely (step 6).
+Step 1 defines the code in Stim. Step 2 builds the circuit that actually runs, in one of two ways: 2a (Qiskit) or 2b (Qrisp). Steps 3–6 are shared. Each track also provides a Stim twin of its circuit (noiseless, with the detector rules): it turns raw bits into detections (step 4) and, with a noise model added, tells the decoder which errors are likely (step 5).
 
 | File | What it holds |
 | --- | --- |
@@ -26,7 +26,7 @@ The circuit from step 1 is used three times: converted for the chip (top row), a
 
 ## Two tracks
 
-Both tracks build the same d=3 rotated surface code without reset, on the same 17 Garnet qubits; they differ only in steps 1–3 below. Steps 4–7 are shared.
+Both tracks build the same d=3 rotated surface code without reset, on the same 17 Garnet qubits; they differ only in step 2 (2a or 2b). Steps 3–6 are shared.
 
 |  | `--track qiskit` (default) | `--track qrisp` |
 | --- | --- | --- |
@@ -35,63 +35,66 @@ Both tracks build the same d=3 rotated surface code without reset, on the same 1
 | Between rounds | Compiler may merge gates across a readout | Barrier after every round's readout |
 | Detection events | Stim's detector rules applied to the bits | Qrisp's post-processing of its parity checks |
 
-The Stim **twin** of each track's circuit (noiseless, with the detector rules) is what steps 5–6 use; each track supplies its own, so the detector numbering always matches.
+The Stim **twin** of each track's circuit (noiseless, with the detector rules) is what steps 4–5 use; each track supplies its own, so the detector numbering always matches.
 
-## 1. Build the circuit in Stim
+## 1. Stim: the surface code and its detector rules
 
 `make_stim_circuit(distance, rounds, basis, no_reset, noise)` in `surface_code.py`
 
-*Qrisp track:* `make_qrisp_experiment(distance, rounds, basis)` builds the native circuit and its detectors in one go, replacing steps 1–2; steps 1–3 below describe the Qiskit track.
+- **What it is:** the reference definition of the experiment, written in Stim: which qubits are data and which are checkers, the gates of each round, the measurements, and the `DETECTOR` / `OBSERVABLE_INCLUDE` rules (which measured bits to XOR).
+- **No reset:** Stim's built-in rotated surface code measures and resets checkers (`MR`). Garnet can't reset mid-circuit, so every `MR` becomes `M` and every detector is rewritten so it still means "did this check change?": each checker reading becomes this reading XOR the previous one, which works out to m\_k ⊕ m\_(k−2).
+- **Used for:** the circuit of track 2a; fast simulation (Stim samples many noisy shots in seconds); and, with noise added, the decoder's map in step 5.
+- **Next:** step 2a or 2b.
 
-- **In:** code size (3), number of rounds, `"Z"` or `"X"` memory, `no_reset=True`, noise (`None` for hardware, `DEFAULT_NOISE` for the decoder).
-- **Does:** takes Stim's built-in rotated surface code, swaps every ancilla `MR` for `M` (Garnet and Emerald can't reset mid-circuit), and rewrites every `DETECTOR` so it still means "did this check change?" (each reading becomes this reading XOR the previous one).
-- **Out:** a `stim.Circuit`: the gates, plus the `DETECTOR` and `OBSERVABLE_INCLUDE` rules.
-- **Next:** the noiseless copy goes to step 2; the same circuit is reused in step 5 (detector rules) and a noisy copy in step 6 (decoder map).
+## 2a. Qiskit track (`--track qiskit`, default)
 
-## 2. Convert to Qiskit
+`make_qiskit_circuit` in `surface_code.py` (using `stim_to_qiskit.py`), then `transpile` in `QiskitTrack.run` (`tracks.py`)
 
-`make_qiskit_circuit(distance, rounds, basis, no_reset)` in `surface_code.py`, using `stim_to_qiskit.py`
+- **In:** the Stim circuit from step 1.
+- **Does:**
+  1. Converts it gate by gate to Qiskit (`H`, `CX`, `M`; for X-memory `RX` = reset + H and `MX` = H + measure) and drops the start-of-circuit resets, since qubits already start in 0. Measurement order stays exactly Stim's, so Stim's rules can read Qiskit's bits.
+  2. Transpiles onto the chip: native gates (`r`, `cz`) and a physical qubit for each circuit qubit, with `routing_method="none"` so SWAPs are forbidden (it raises instead of adding one).
+- **Out:** the circuit to run. It prints `CX=72 -> CZ=72`; equal counts confirm 0 SWAPs.
+- **Twin for steps 4–5:** the Stim circuit from step 1 itself.
+- **Next:** step 3.
 
-- **In:** the same settings as step 1.
-- **Does:** builds the noiseless Stim circuit, converts it gate by gate (`H`, `CX`, `M`; `RX` = reset + H, `MX` = H + measure), then deletes the `reset` lines (they only appear at the start, and qubits already start in 0).
-- **Out:** a `qiskit.QuantumCircuit` with 17 qubits and one classical bit per measurement, in the same order as Stim's measurements.
-- **Next:** step 3. The matching measurement order is what lets step 5 apply Stim's rules to Qiskit's bits.
+## 2b. Qrisp track (`--track qrisp`)
 
-## 3. Transpile onto the chip
+`make_qrisp_experiment` in `surface_code.py`; placement and pinning in `garnet_layout.py` (from the Qrisp branch)
 
-`transpile(qc, backend, optimization_level=3, routing_method="none")`, in `QiskitTrack.run` (`tracks.py`)
+- **In:** the same settings (distance, rounds, basis). It is the same code as step 1, rebuilt natively in Qrisp rather than converted from Stim.
+- **Does:**
+  1. Writes each round with Garnet's native gates only: one-pulse SQRT\_Y rotations and CZ, in Stim's hook-safe CZ order. Each data qubit's rotation ("frame") is tracked, so it costs 2 pulses per data qubit per round. A barrier after every round's readout stops the compiler moving gates across it. Detectors are declared in the circuit (`parity(...)`) with the same m\_k ⊕ m\_(k−2) rule.
+  2. Reads live calibration, scores every SWAP-free placement on Garnet (there is only one 17-qubit set; it leaves out QB3, QB17, QB18) and pins the circuit to the best one. The pass raises on any CZ that isn't on a native coupler.
+- **Out:** the circuit to run, and Qrisp's post-processing function that turns raw bits into detections.
+- **Twin for steps 4–5:** Qrisp exports a Stim copy of this circuit (`.to_stim()`), numbered like its detections.
+- **Next:** step 3.
 
-- **In:** the Qiskit circuit and the backend (real Garnet or `IQMFakeGarnet`).
-- **Does:** rewrites `h`/`cx` into the chip's native gates (`r`, `cz`) and assigns each circuit qubit to a physical qubit. `routing_method="none"` forbids SWAPs: if no SWAP-free placement existed, transpile would raise instead of adding them.
-- **Out:** the transpiled circuit. It prints `CX=72 -> CZ=72`; equal counts confirm it.
-- **Qrisp track:** `garnet_layout.rank_placements` scores every SWAP-free placement with live calibration and pins the best one; its pass raises on any non-native CZ.
-- **Next:** step 4.
-
-## 4. Run it
+## 3. Run it
 
 `track.run(...)` in `tracks.py` (Qrisp on hardware: `run_qrisp_batch` in `run_on_hardware.py`)
 
 - **In:** one circuit per round count, a number of shots (e.g. 2,000), optional dynamical decoupling (`--dd`).
 - **Does:** submits **all round counts as one job**, so they run back to back on the same calibration, then waits.
 - **Out:** `counts` per circuit, a dictionary `{bitstring: times seen}`. Each bitstring holds every measurement of one shot, e.g. 33 bits for 3 rounds (8 ancillas × 3 + 9 data).
-- **Next:** step 5. The raw counts are saved as soon as the job returns, so you can re-decode later without new QPU time.
+- **Next:** step 4. The raw counts are saved as soon as the job returns, so you can re-decode later without new QPU time.
 
-## 5. Counts to detection events
+## 4. Counts to detection events
 
 Qiskit track: `counts_to_measurement_array()` then `extract_syndromes()`; Qrisp track: Qrisp's post-processing. Both in `tracks.py`.
 
-- **In:** the counts, and the Stim circuit from step 1 (built with the same settings as the one that ran).
+- **In:** the counts, and the track's Stim twin (built with the same settings as the circuit that ran).
 - **Does:** turns counts into a table (one row per shot, one column per measurement, Qiskit's reversed bit order fixed), then applies every `DETECTOR` and `OBSERVABLE_INCLUDE` rule: each is an XOR of a few bits.
 - **Out:**
   - `det_events`: shots × detectors, `True` = that check reported a change (a hint that an error happened nearby).
   - `obs_flips`: shots × 1, `True` = the stored logical bit came out flipped.
-- **Next:** step 6.
+- **Next:** step 5.
 
-## 6. Decode with PyMatching
+## 5. Decode with PyMatching
 
 `noise_models.add_noise` then `decoding.logical_error`, called by `run_experiment.py` (`--noise`, `--decoder`)
 
-- **In:** `det_events` and `obs_flips` from step 5, and the track's noiseless twin.
+- **In:** `det_events` and `obs_flips` from step 4, and the track's noiseless twin.
 - **Does:**
   1. **Noise model** (`--noise`) adds the decoder's guess of the noise to a copy of the twin:
      - `uniform` (default): every gate, readout and idle period fails with 0.3%; `uniform:0.005` sets your own value.
@@ -100,22 +103,23 @@ Qiskit track: `counts_to_measurement_array()` then `extract_syndromes()`; Qrisp 
   3. **Decoder** (`--decoder`, default `pymatching`) predicts, per shot, whether the logical bit flipped. A shot is a logical error when the prediction disagrees with `obs_flips`.
 - **Out:** `P_error` and its error bar, √(P(1−P)/shots), plus how often each detector fired.
 - **Add your own:** a noise model is one `@register("name")` function in `noise_models.py`; a decoder is one `@register("name")` function in `decoding.py` taking `(det_events, dem)` and returning predictions, or any `module:function` passed to `--decoder`.
-- **Next:** step 7.
+- **`qubit_calibrated` decoder:** the same matching, but each physical qubit is weighted from that run's calibration (`prepare_twin` in `decoding.py`; `--noise` is ignored). Re-decode saved shots with `python run_experiment.py --load results/<run>.json --decoder qubit_calibrated`. On the 17:47 Qrisp shots it moved Z from 12.6% to 10.9% per round and X from 9.9% to 9.6% (simple fit); with DD it made no difference (7.9% Z, 7.3% X), and on the 20:17 Qiskit DD run it was slightly worse (amplitude fit 14.3% → 14.7%).
+- **Next:** step 6.
 
-## 7. Repeat over rounds and fit the logical error rate
+## 6. Repeat over rounds and fit the logical error rate
 
 `run_experiment.py`
 
 - **In:** a list of round counts (e.g. 1 2 3 4 5).
-- **Does:** runs steps 1–6 for all of them (one job), saving as it goes, then fits P\_error against rounds two ways. The README fit assumes every round costs the same:
+- **Does:** runs steps 1–5 for all of them (one job), saving as it goes, then fits P\_error against rounds two ways. Simple fit (the formula from the challenge README) assumes every round costs the same ε\_L:
 
-```latex
+```math
 P_\text{error}(n) = \tfrac{1}{2}\left[1 - (1 - 2\varepsilon_L)^n\right]
 ```
 
-- The amplitude fit adds a factor A for the one-off cost of state preparation and final readout, so ε\_L is the cost of each extra round. On Garnet round 1 is far cheaper than later rounds, so this is the number to report. It needs at least 3 round counts:
+- Amplitude fit: adds a factor A for the one-off cost of state preparation and final readout, so ε\_L is the cost of each extra round. On Garnet round 1 is far cheaper than later rounds, so this is the number to report. It needs at least 3 round counts:
 
-```latex
+```math
 P_\text{error}(n) = \tfrac{1}{2}\left[1 - A\,(1 - 2\varepsilon_L)^n\right]
 ```
 
@@ -130,9 +134,9 @@ P_\text{error}(n) = \tfrac{1}{2}\left[1 - A\,(1 - 2\varepsilon_L)^n\right]
 
 On real Garnet, DD lowers the per-round logical error by about 30% in both tracks; even with DD each round after the first costs about 9–14%, against 3% on the simulator.
 
-&#91;embedded content: results/\*.json · fake Garnet 15:37, Garnet no DD 17:14, Garnet with DD 17:12, Oct 24 2026\]
+![P_error vs rounds: Garnet no DD, Garnet with DD, fake Garnet](docs/results_chart.png)
 
-Every run had 0 SWAPs. Each pair of runs was taken back to back on the same qubits. Round 1 is far cheaper than later rounds, so the README fit (one rate for every round) understates the cost of a round: it gives 5.6% → 4.3% for these runs. The amplitude fit separates the one-off first-round cost; with only 3 round counts per run, treat its error bars as optimistic.
+Every run had 0 SWAPs. Each pair of runs was taken back to back on the same qubits. Round 1 is far cheaper than later rounds, so the simple fit (one rate for every round) understates the cost of a round: it gives 5.6% → 4.3% for these runs. The amplitude fit separates the one-off first-round cost; with only 3 round counts per run, treat its error bars as optimistic.
 
 The Qrisp track (teammate's branch, 17:47 and 17:50, 5,000 shots, rounds 1, 2, 3, 4, 6, 8) confirms it with more data:
 
@@ -155,7 +159,7 @@ On real Garnet the code works for 1 round, then breaks at the first mid-circuit 
   1. Readout takes about 1–2 µs; data qubits idle and lose phase (Ramsey T2 only 5–10 µs on Garnet).
   2. Measuring a checker disturbs it 2–5% of the time (IQM readout QNDness 0.95–0.98), and with no reset the error carries forward.
   3. Readout reports the wrong bit 2–5% of the time.
-- **Report the amplitude fit, not the README fit.** Round 1 is nearly free, so one rate for all rounds understates each round's cost about 3× (Qiskit track, no DD: 5.6% vs 20.4% per round).
+- **Report the amplitude fit, not the simple fit.** Round 1 is nearly free, so one rate for all rounds understates each round's cost about 3× (Qiskit track, no DD: 5.6% vs 20.4% per round).
 - **DD helps but doesn't fix it.** Back to back on the same qubits: Qiskit track 20.4% → 14.3% per round, Qrisp track 12.6% → 8.6% (Z) and 11.0% → 9.0% (X). Round 1 is unchanged, as expected.
 - **A better decoder can't rescue it.** Re-decoding with a fitted readout-idle noise model made P\_error slightly worse, and the Qrisp branch's "garnet\_uniform" weights also made it worse: the data is above the code's threshold.
 - **Open question:** Z-checks fire about as often as X-checks on the Qiskit track, though idle dephasing should mostly trip X-checks. Likely the transpiler leaves some data qubits rotated while they idle; the Qrisp track tracks those rotations explicitly.
@@ -164,7 +168,7 @@ On real Garnet the code works for 1 round, then breaks at the first mid-circuit 
 
 1. **Back-to-back track comparison:** `--track qiskit` then `--track qrisp`, same rounds, shots and DD setting, a few minutes apart. Tells whether the native-CZ circuit with barriers really adds less error per round.
 2. **X-memory on Garnet** on the Qiskit track (`--basis X`), with and without DD.
-3. **Calibration-weighted decoding:** run with `--noise calibration` and compare against `--noise uniform` on the same shots (re-decoding a saved file still needs a small `--load` option).
+3. **Calibration-weighted decoding:** run with `--noise calibration` and compare against `--noise uniform` on the same shots (`--load` re-decodes a saved file).
 4. **Tiny diagnostic circuits:** one qubit measured twice (readout disturbance), and one data qubit idling while a neighbour is read out (idle decay).
 5. **New decoders:** e.g. the union-find decoder from the `error_testing` branch, registered in `decoding.py`.
 6. **Ask IQM mentors** whether mid-circuit reset or feedback is available; it would remove the no-reset problem.
@@ -181,12 +185,14 @@ In Command Prompt / Anaconda Prompt use `set IQM_TOKEN=...` with no quotes. Don'
 | `python test_pipeline.py` | No | Checks both tracks: circuit, conversion, zero SWAPs, noise models, decoders |
 | `python check_surface_code.py` | No | The Qrisp branch's self-test of its generator and Garnet placement |
 | `python run_experiment.py --fake --rounds 1 2 3` | No | Full pipeline on IQM's local fake Garnet |
-| `python run_experiment.py --qc garnet --rounds 1 2 3 4 5` | Yes | Real run; all round counts in one job |
+| `python run_experiment.py --qc garnet --rounds 1 2 3 4 6 8` | Yes | Real run; all round counts in one job |
+| `python run_experiment.py --load results/<file>.json --noise calibration` | No | Re-decode a saved run (also `sweep.py` files, with `--basis`) |
+| `python run_experiment.py --compare results/<A>.json results/<B>.json` | No | ε\_L of two runs side by side, and how many error bars apart |
 | `python diagnose_run.py results/<file>.json` | No | Detector firing per round and which error type fits |
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `--track qiskit\|qrisp` | `qiskit` | How the circuit is built and compiled |
+| `--track qiskit\|qrisp` | `qiskit` | Step 2a or 2b |
 | `--noise uniform\|uniform:P\|calibration` | `uniform` | The decoder's noise model |
 | `--decoder NAME\|module:function` | `pymatching` | The decoder |
 | `--qc NAME` | `garnet` | Quantum computer on Resonance |
@@ -195,7 +201,12 @@ In Command Prompt / Anaconda Prompt use `set IQM_TOKEN=...` with no quotes. Don'
 | `--shots N` | `2000` | Shots per round count |
 | `--basis Z\|X` | `Z` | Z-memory (bit flips) or X-memory (phase flips) |
 | `--dd` | off | IQM's dynamical decoupling (hardware only) |
+| `--herald` | off | Drop shots where a qubit didn't start in 0 (hardware only) |
+| `--load FILE` | none | Re-decode a saved run instead of running anything |
+| `--compare A B` | none | Compare two saved runs and exit |
 | `--distance N` | `3` | Code size; 5 needs 49 qubits (Emerald) |
 | `--tag TEXT` | none | Extra label in the output file names |
+
+On real hardware IQM's "circuit longer than T2" check is switched off, so 6–8 round runs aren't refused.
 
 The Qrisp track also needs `networkx` (`pip install -r requirements.txt` installs it).
