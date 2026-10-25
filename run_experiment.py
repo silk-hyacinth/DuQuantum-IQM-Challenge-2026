@@ -8,6 +8,7 @@ Usage (from the repo root):
     python run_experiment.py --qc garnet --track qrisp      # the Qrisp-branch circuit instead
     python run_experiment.py --qc garnet --dd --herald      # dynamical decoupling + heralding
     python run_experiment.py --qc garnet --noise calibration --decoder pymatching
+    python run_experiment.py --load results/<run>.json --decoder qubit_calibrated
 
   No QPU time:
     python run_experiment.py --load results/<run>.json --noise calibration
@@ -121,12 +122,16 @@ def fit_record(record) -> dict:
 def decode_record(record, events, noise, decoder):
     """Decode every round count of `record` (events = [(det_events, obs_flips), ...])."""
     track = TRACKS[record["track"]]
+    prepare = getattr(get_decoder(decoder), "prepare_twin", None)
     for saved, (det, obs) in zip(record["runs"], events):
         ctx = NoiseContext(calibration=record.get("calibration"),
                            qubit_map={int(k): v for k, v in (saved.get("qubit_map") or {}).items()},
                            dd=bool(record.get("dd")))
-        noisy = add_noise(track.twin(record["distance"], saved["rounds"], record["basis"]), noise, ctx)
-        p, err, _ = logical_error(det, obs, noisy, decoder)
+        twin = track.twin(record["distance"], saved["rounds"], record["basis"])
+        # prepare_twin (qubit_calibrated) writes per-qubit weights. Every other
+        # decoder uses --noise. The matching call itself is the same.
+        circuit = prepare(twin, ctx) if prepare else add_noise(twin, noise, ctx)
+        p, err, _ = logical_error(det, obs, circuit, decoder)
         undecoded = float(np.asarray(obs)[:, 0].mean())
         det_rate = float(np.asarray(det).mean())
         saved.update(p_error=p, p_error_err=err, undecoded=undecoded, detector_rate=det_rate,
@@ -277,7 +282,7 @@ def main():
     ap.add_argument("--noise", default="uniform",
                     help="decoder noise model: uniform | uniform:<p> | calibration (see noise_models.py)")
     ap.add_argument("--decoder", default="pymatching",
-                    help="decoder: pymatching, or module:function (see decoding.py)")
+                    help="pymatching | qubit_calibrated | module:function (see decoding.py)")
     ap.add_argument("--qc", default="garnet", help="quantum computer name on Resonance")
     ap.add_argument("--fake", action="store_true", help="use IQMFakeGarnet locally instead of hardware")
     ap.add_argument("--distance", type=int, default=3)
@@ -335,6 +340,9 @@ def main():
     json_path = f"results/{name}.json"
 
     # Calibration snapshot, taken right before the job and saved immediately.
+    if not args.fake:
+        from run_on_hardware import _load_credentials
+        _load_credentials()
     if args.fake:
         from iqm.qiskit_iqm.fake_backends.fake_garnet import IQMFakeGarnet
         calibration = get_calibration(IQMFakeGarnet())
