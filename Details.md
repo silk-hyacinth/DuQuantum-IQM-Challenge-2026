@@ -100,6 +100,7 @@ Qiskit track: `counts_to_measurement_array()` then `extract_syndromes()`; Qrisp 
   3. **Decoder** (`--decoder`, default `pymatching`) predicts, per shot, whether the logical bit flipped. A shot is a logical error when the prediction disagrees with `obs_flips`.
 - **Out:** `P_error` and its error bar, √(P(1−P)/shots), plus how often each detector fired.
 - **Add your own:** a noise model is one `@register("name")` function in `noise_models.py`; a decoder is one `@register("name")` function in `decoding.py` taking `(det_events, dem)` and returning predictions, or any `module:function` passed to `--decoder`.
+- **`qubit_calibrated`:** same matching, but each physical qubit is weighted from that run's calibration (`prepare_twin` in `decoding.py`). Re-decode saved shots with `python run_experiment.py --load results/<run>.json --decoder qubit_calibrated`. On the 17:47 shots it moved Z from 12.6% to 10.9% per round and X from 9.9% to 9.6%. With decoupling already on it stayed at 7.9% and 7.3%, so it does not replace the decoupling number.
 - **Next:** step 7.
 
 ## 7. Repeat over rounds and fit the logical error rate

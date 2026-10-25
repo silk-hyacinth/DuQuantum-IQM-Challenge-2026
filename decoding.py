@@ -13,7 +13,9 @@ logical value got flipped. Every decoder here has the same shape:
 
 Built-in
 --------
-  pymatching   minimum-weight perfect matching (PyMatching)
+  pymatching         minimum-weight perfect matching (PyMatching)
+  qubit_calibrated   the same matching, with each physical qubit weighted by its
+                     own calibration. prepare_twin writes those weights before matching.
 
 Adding a decoder
 ----------------
@@ -32,9 +34,12 @@ a whole saved run instead; they are not used by run_experiment.py.
 """
 
 import importlib
+import math
 
 import numpy as np
 import stim
+
+from noise_models import READOUT_TIME, NoiseContext, Rates, annotate
 
 DECODERS: dict = {}
 
@@ -58,12 +63,79 @@ def get_decoder(spec: str):
                      f"(or module:function)")
 
 
+def qubit_calibrated_rates(ctx: NoiseContext) -> Rates:
+    """One error rate per physical qubit, from that run's calibration snapshot.
+
+    The idle term is half the estimated phase error during one readout, because
+    the 1.5 us readout duration is an assumption. Echo T2 when the run used
+    dynamical decoupling, Ramsey T2 otherwise. Measured on the saved 17:47 and
+    17:49 Garnet shots (no new QPU time), README-style per-round error:
+
+        weights              Z no DD   X no DD   Z with DD   X with DD
+        uniform 0.3%         0.126     0.099     0.078       0.073
+        every qubit, full    0.098     0.098     0.084       0.091
+        worst 4 qubits only  0.128
+        half idle (this one) 0.109     0.096     0.079       0.073
+
+    Full idle and worst-four (QB2, QB6, QB11, QB12) each made a basis worse.
+    Half idle helps the runs without decoupling and leaves the decoupling runs
+    where they were. It does not beat 7.8% (Z) and 7.3% (X).
+    """
+    cal = ctx.calibration or {}
+    if not cal.get("readout") or not cal.get("cz"):
+        raise ValueError("qubit_calibrated needs a calibration snapshot with per-qubit readout and CZ errors")
+
+    def qname(q: int):
+        return ctx.physical(q)
+
+    def gate1(q: int) -> float:
+        return (cal.get("prx") or {}).get(qname(q), 0.001)
+
+    def gate2(a: int, b: int) -> float:
+        pair = "__".join(sorted((str(qname(a)), str(qname(b)))))
+        return (cal.get("cz") or {}).get(pair, 0.005)
+
+    def readout(q: int) -> float:
+        return (cal.get("readout") or {}).get(qname(q), 0.02)
+
+    def after_readout(q: int) -> float:
+        name = qname(q)
+        qnd = (cal.get("qndness") or {}).get(name)
+        if qnd is not None:
+            return max(1.0 - qnd, 0.0)
+        return (cal.get("leakage") or {}).get(name, 0.0)
+
+    def idle(q: int):
+        name = qname(q)
+        table = cal.get("t2_echo") if ctx.dd else cal.get("t2")
+        t2 = (table or {}).get(name) or (cal.get("t2") or {}).get(name, 10e-6)
+        phase = 0.5 * (1.0 - math.exp(-READOUT_TIME / t2))
+        return (0.0, 0.0, 0.5 * phase)
+
+    return Rates(gate1=gate1, gate2=gate2, readout=readout, reset=lambda q: 0.0,
+                 after_readout=after_readout, idle=idle)
+
+
+def qubit_calibrated_circuit(noiseless_twin: stim.Circuit, ctx: NoiseContext) -> stim.Circuit:
+    """Noiseless twin plus one error rate per physical qubit."""
+    return annotate(noiseless_twin, qubit_calibrated_rates(ctx))
+
+
 @register("pymatching")
 def pymatching_decoder(det_events: np.ndarray, dem: stim.DetectorErrorModel) -> np.ndarray:
     """Minimum-weight perfect matching: the most likely set of errors that explains the shot."""
     import pymatching
     matcher = pymatching.Matching.from_detector_error_model(dem)
     return np.asarray(matcher.decode_batch(det_events), dtype=bool)
+
+
+@register("qubit_calibrated")
+def qubit_calibrated_decoder(det_events: np.ndarray, dem: stim.DetectorErrorModel) -> np.ndarray:
+    """Matching on the graph prepare_twin built from this run's calibration."""
+    return pymatching_decoder(det_events, dem)
+
+
+qubit_calibrated_decoder.prepare_twin = qubit_calibrated_circuit
 
 
 def logical_error(det_events, obs_flips, noisy_twin: stim.Circuit, decoder: str = "pymatching"):
