@@ -41,11 +41,11 @@ A --load writes a NEW file (<original>_redecode_<noise>_<decoder>_<time>); the o
 never overwritten.
 
 Two fits are reported:
-    README fit      2 P_error = 1 - (1 - 2 eps_L)^n
+    simple fit      2 P_error = 1 - (1 - 2 eps_L)^n          (the challenge README's formula)
     amplitude fit   2 P_error = 1 - A (1 - 2 eps_L)^n
 The amplitude A absorbs the one-off cost of state preparation and final readout, so
 eps_L is the cost of each extra round. On Garnet round 1 is much cheaper than later
-rounds, which drags the README fit down; the amplitude fit is the more honest
+rounds, which drags the simple fit down; the amplitude fit is the more honest
 per-round number. It needs at least 3 round counts.
 """
 
@@ -71,7 +71,7 @@ from run_on_hardware import get_calibration
 # ─────────────────────────────────────────────────────────────────────────────
 
 def p_error_model(n_rounds, eps):
-    """README fit: 2 P_error = 1 - (1 - 2 eps_L)^n_rounds."""
+    """Simple fit (the challenge README's formula): 2 P_error = 1 - (1 - 2 eps_L)^n_rounds."""
     return 0.5 * (1 - (1 - 2 * eps) ** n_rounds)
 
 
@@ -81,7 +81,7 @@ def p_error_model_amp(n_rounds, eps, amp):
 
 
 def fit_eps(rounds, p, err):
-    """README fit. Returns (eps, eps_err)."""
+    """Simple fit. Returns (eps, eps_err)."""
     sigma = np.maximum(np.asarray(err), 1e-6)
     popt, pcov = curve_fit(p_error_model, rounds, p, p0=[0.01], sigma=sigma,
                            absolute_sigma=True, bounds=(0, 0.5))
@@ -105,8 +105,8 @@ def fit_record(record) -> dict:
     fits = {}
     if len(R) >= 2:
         eps, eps_err = fit_eps(R, P, E)
-        fits["readme"] = dict(eps_L=eps, eps_L_err=eps_err)
-        print(f"\n  README fit:     eps_L = {eps:.4f} ± {eps_err:.4f} per round")
+        fits["simple"] = dict(eps_L=eps, eps_L_err=eps_err)
+        print(f"\n  simple fit:     eps_L = {eps:.4f} ± {eps_err:.4f} per round")
     if len(R) >= 3:
         eps_a, eps_a_err, amp, amp_err = fit_eps_amp(R, P, E)
         fits["amplitude"] = dict(eps_L=eps_a, eps_L_err=eps_a_err, amp=amp, amp_err=amp_err)
@@ -141,7 +141,7 @@ def plot_record(record, path):
     E = np.array([x["p_error_err"] for x in record["runs"]])
     U = np.array([x["undecoded"] for x in record["runs"]])
     fits = record.get("fits", {})
-    xs = np.linspace(0, max(R) + 0.5, 200)
+    xs = np.linspace(0.5, max(R) + 0.5, 200)   # from half a round: the amplitude curve can dip below 0 near n=0
     plt.figure(figsize=(6.5, 4))
     extras = ", DD" if record.get("dd") else ""
     extras += ", herald" if record.get("herald") else ""
@@ -149,10 +149,10 @@ def plot_record(record, path):
                  label=f"{record['target']}, {record['track']}, d={record['distance']}, "
                        f"{record['basis']}-memory{extras} (decoded)")
     plt.plot(R, U, "x", color="tab:blue", alpha=0.45, label="no correction")
-    if "readme" in fits:
-        f = fits["readme"]
+    if "simple" in fits:
+        f = fits["simple"]
         plt.plot(xs, p_error_model(xs, f["eps_L"]), "--", color="gray",
-                 label=rf"README fit: $\varepsilon_L$ = {f['eps_L']:.4f} ± {f['eps_L_err']:.4f}")
+                 label=rf"simple fit: $\varepsilon_L$ = {f['eps_L']:.4f} ± {f['eps_L_err']:.4f}")
     if "amplitude" in fits:
         f = fits["amplitude"]
         plt.plot(xs, p_error_model_amp(xs, f["eps_L"], f["amp"]), "-", color="tab:blue",
@@ -164,7 +164,7 @@ def plot_record(record, path):
     plt.title(f"Surface code memory experiment (noise: {record['noise']}, decoder: {record['decoder']})",
               fontsize=9)
     plt.grid(alpha=0.3)
-    plt.legend(fontsize=7, loc="upper left")
+    plt.legend(fontsize=7, loc="best")
     plt.tight_layout()
     plt.savefig(path, dpi=150)
 
@@ -186,11 +186,13 @@ def compare(path_a, path_b):
     cal_b = (b.get("calibration") or {}).get("calibration_set_id")
     if cal_a != cal_b:
         print(f"  NOTE: different calibration sets ({cal_a} vs {cal_b}); part of any difference may be chip drift.")
-    for kind in ("readme", "amplitude"):
-        fa, fb = (r.get("fits", {}).get(kind) for r in (a, b))
-        if kind == "readme" and not fa and "eps_L" in a:        # older files
+    for kind in ("simple", "amplitude"):
+        # files written before the rename call the simple fit "readme"
+        fa, fb = (r.get("fits", {}).get(kind) or r.get("fits", {}).get("readme" if kind == "simple" else kind)
+                  for r in (a, b))
+        if kind == "simple" and not fa and "eps_L" in a:        # older files
             fa = {"eps_L": a["eps_L"], "eps_L_err": a["eps_L_err"]}
-        if kind == "readme" and not fb and "eps_L" in b:
+        if kind == "simple" and not fb and "eps_L" in b:
             fb = {"eps_L": b["eps_L"], "eps_L_err": b["eps_L_err"]}
         if not (fa and fb):
             print(f"  {kind} fit: missing in one of the files")
@@ -369,8 +371,8 @@ def main():
     decode_record(record, [(r["det_events"], r["obs_flips"]) for r in runs], args.noise, args.decoder)
     save()
     record.update(fits=fit_record(record), status="complete")
-    if "readme" in record["fits"]:                # kept for older scripts that read these keys
-        record.update(eps_L=record["fits"]["readme"]["eps_L"], eps_L_err=record["fits"]["readme"]["eps_L_err"])
+    if "simple" in record["fits"]:                # kept for older scripts that read these keys
+        record.update(eps_L=record["fits"]["simple"]["eps_L"], eps_L_err=record["fits"]["simple"]["eps_L_err"])
     save()
     plot_record(record, f"results/{name}.png")
     print(f"  Saved {json_path} and results/{name}.png")
