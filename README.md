@@ -90,7 +90,7 @@ Qiskit track: `counts_to_measurement_array()` then `extract_syndromes()`; Qrisp 
   - `obs_flips`: shots × 1, `True` = the stored logical bit came out flipped.
 - **Next:** step 5.
 
-## 5. Decode with PyMatching
+## 5. Decode
 
 `noise_models.add_noise` then `decoding.logical_error`, called by `run_experiment.py` (`--noise`, `--decoder`)
 
@@ -103,7 +103,18 @@ Qiskit track: `counts_to_measurement_array()` then `extract_syndromes()`; Qrisp 
   3. **Decoder** (`--decoder`, default `pymatching`) predicts, per shot, whether the logical bit flipped. A shot is a logical error when the prediction disagrees with `obs_flips`.
 - **Out:** `P_error` and its error bar, √(P(1−P)/shots), plus how often each detector fired.
 - **Add your own:** a noise model is one `@register("name")` function in `noise_models.py`; a decoder is one `@register("name")` function in `decoding.py` taking `(det_events, dem)` and returning predictions, or any `module:function` passed to `--decoder`.
-- **`qubit_calibrated` decoder:** the same matching, but each physical qubit is weighted from that run's calibration (`prepare_twin` in `decoding.py`; `--noise` is ignored). Re-decode saved shots with `python run_experiment.py --load results/<run>.json --decoder qubit_calibrated`. On the 17:47 Qrisp shots it moved Z from 12.6% to 10.9% per round and X from 9.9% to 9.6% (simple fit); with DD it made no difference (7.9% Z, 7.3% X), and on the 20:17 Qiskit DD run it was slightly worse (amplitude fit 14.3% → 14.7%).
+- **Decoding options.** Every option is minimum-weight perfect matching (PyMatching); they differ only in how likely the decoder thinks each error is, which changes the explanation it picks. All of them can re-decode saved shots with `--load results/<run>.json`, so comparisons use identical data.
+
+| Option | Error weights | Result on saved Garnet shots |
+| --- | --- | --- |
+| no correction | none: just read the logical bit | the grey points in each plot, the baseline to beat |
+| `--decoder pymatching --noise uniform` (default) | 0.3% for every gate, readout and idle period | the reference numbers |
+| `--noise uniform:P` | your own single rate P | |
+| `--noise calibration` | per qubit, from the run's calibration: CZ, PRX, readout, 1 − QNDness, full idle dephasing during readout | Qrisp 17:47 Z: 12.5% → 9.9% per round (amplitude fit) |
+| `--decoder qubit_calibrated` | per qubit like `calibration`, but half the idle term (readout time is a guess); ignores `--noise` (`prepare_twin` in `decoding.py`) | Qrisp 17:47: Z 12.6% → 10.9%, X 9.9% → 9.6% (simple fit); with DD no change (7.9% Z, 7.3% X); Qiskit 20:17 DD: 14.3% → 14.7% (amplitude fit) |
+| `--decoder module:function` | whatever your function does | |
+| `sweep.py --decoder decoders:garnet_uniform` | Garnet's typical sizes: CZ 0.5%, readout 2%, a few % idle | worse: 8.3% → 8.8% (X), 8.6% → 8.8% (Z) |
+
 - **Next:** step 6.
 
 ## 6. Repeat over rounds and fit the logical error rate
