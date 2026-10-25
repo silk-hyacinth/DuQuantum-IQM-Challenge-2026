@@ -41,6 +41,30 @@ def _fake_backend():
     return IQMFakeGarnet()
 
 
+def _swap_free_layout(qc, backend):
+    """Find chip qubits for every circuit qubit so each CX lands on a real coupler.
+
+    Qiskit's own search (VF2Layout) gives up on big codes (d=5 on Emerald), so this
+    searches directly: the code's interaction graph as a subgraph of the chip's
+    coupling graph. Returns initial_layout (list: circuit qubit i -> chip qubit),
+    or raises if the code does not fit at all.
+    """
+    import networkx as nx
+    from networkx.algorithms import isomorphism
+
+    code = nx.Graph()
+    code.add_nodes_from(range(qc.num_qubits))
+    for inst in qc.data:
+        if len(inst.qubits) == 2:
+            code.add_edge(*(qc.find_bit(q).index for q in inst.qubits))
+    chip = nx.Graph(list(backend.coupling_map.get_edges()))
+    match = next(isomorphism.GraphMatcher(chip, code).subgraph_monomorphisms_iter(), None)
+    if match is None:
+        raise RuntimeError(f"the code ({qc.num_qubits} qubits) has no SWAP-free placement on this chip")
+    inverse = {c: p for p, c in match.items()}
+    return [inverse[i] for i in range(qc.num_qubits)]
+
+
 def compilation_options(dd: bool = False, herald: bool = False):
     """IQM server-side options for a real-hardware job (both tracks use the same ones).
 
@@ -105,22 +129,50 @@ class QiskitTrack:
         return twin.compile_m2d_converter().convert(measurements=raw.astype(bool), separate_observables=True)
 
     def run(self, distance, rounds_list, basis, shots, quantum_computer="garnet", fake=False, dd=False,
-            herald=False):
+            herald=False, allow_swaps=False):
+        """allow_swaps: only if NO SWAP-free placement exists, let the transpiler add SWAPs
+        (Sabre routing). Each SWAP is 3 extra CZs; the extra count is printed and saved."""
         from run_on_hardware import get_backend, get_physical_layout
         from internal_helpers import counts_to_measurement_array
         from extract_syndromes import extract_syndromes
 
+        from qiskit.transpiler.exceptions import TranspilerError
+
         backend = _fake_backend() if fake else get_backend(quantum_computer)
         prepared = []
+        placement = None    # found once (if Qiskit's own search fails), reused for every round count
         for r in rounds_list:
             qc = make_qiskit_circuit(distance, r, basis=basis)
             twin = self.twin(distance, r, basis)
             # routing_method="none": the transpiler may NOT add SWAPs; it raises instead.
-            qc_t = transpile(qc, backend, optimization_level=3, seed_transpiler=1, routing_method="none")
+            try:
+                if placement is not None:
+                    raise TranspilerError("use the placement found earlier")
+                qc_t = transpile(qc, backend, optimization_level=3, seed_transpiler=1, routing_method="none")
+            except TranspilerError:
+                if placement is None:
+                    try:
+                        placement = _swap_free_layout(qc, backend)
+                        print(f"[qiskit] Qiskit found no SWAP-free placement; found one directly "
+                              f"({len(placement)} chip qubits)")
+                    except RuntimeError:
+                        if not allow_swaps:
+                            raise RuntimeError(
+                                f"d={distance} has no SWAP-free placement on {quantum_computer} right now; "
+                                f"rerun with --allow-swaps to let the transpiler add SWAPs") from None
+                        placement = "swaps"
+                        print(f"[qiskit] no SWAP-free placement on this chip; --allow-swaps: "
+                              f"letting the transpiler add SWAPs")
+                if placement == "swaps":
+                    qc_t = transpile(qc, backend, optimization_level=3, seed_transpiler=1)
+                else:
+                    qc_t = transpile(qc, backend, optimization_level=3, seed_transpiler=1,
+                                     routing_method="none", initial_layout=placement)
             n_cx, n_cz = qc.count_ops().get("cx", 0), qc_t.count_ops().get("cz", 0)
             layout = get_physical_layout(qc_t, twin, backend)
-            prepared.append((r, qc_t, twin, layout, n_cx == n_cz))
-            print(f"[qiskit] d={distance} {basis} rounds={r}: CX={n_cx} -> CZ={n_cz}, depth {qc_t.depth()}")
+            prepared.append((r, qc_t, twin, layout, n_cx == n_cz, n_cz - n_cx))
+            extra = f" (+{n_cz - n_cx} CZ from SWAPs, about {(n_cz - n_cx) / 3:.0f} SWAPs)" if n_cz > n_cx else ""
+            print(f"[qiskit] d={distance} {basis} rounds={r}: CX={n_cx} -> CZ={n_cz}{extra}, depth {qc_t.depth()}")
 
         options = {} if fake else {"circuit_compilation_options": compilation_options(dd, herald)}
         job = backend.run([p[1] for p in prepared], shots=shots, **options)
@@ -128,7 +180,7 @@ class QiskitTrack:
         result = job.result()
 
         out = []
-        for i, (r, qc_t, twin, layout, swap_free) in enumerate(prepared):
+        for i, (r, qc_t, twin, layout, swap_free, extra_cz) in enumerate(prepared):
             counts = result.get_counts(i)
             raw = counts_to_measurement_array(counts, twin.num_measurements, sum(counts.values()))
             s = extract_syndromes(raw, twin, print_summary=False)
@@ -138,7 +190,7 @@ class QiskitTrack:
                 "qubit_map": {l["stim_qubit"]: l["physical"] for l in layout},
                 "layout": layout, "job_id": _job_id(job),
                 "native_ops": {k: int(v) for k, v in qc_t.count_ops().items()},
-                "depth": int(qc_t.depth()), "swap_free": bool(swap_free),
+                "depth": int(qc_t.depth()), "swap_free": bool(swap_free), "extra_cz": int(extra_cz),
             })
         return out
 

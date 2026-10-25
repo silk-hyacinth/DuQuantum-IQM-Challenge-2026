@@ -291,6 +291,8 @@ def main():
     ap.add_argument("--dd", action="store_true", help="enable dynamical decoupling (hardware only)")
     ap.add_argument("--herald", action="store_true",
                     help="drop shots where a qubit did not start in 0 (hardware only)")
+    ap.add_argument("--allow-swaps", action="store_true",
+                    help="Qiskit track: if no SWAP-free placement exists, let the transpiler add SWAPs")
     ap.add_argument("--basis", default="Z", choices=["Z", "X"],
                     help="Z-memory (bit-flip protection) or X-memory (phase-flip protection)")
     ap.add_argument("--tag", default="", help="extra label for the output file name")
@@ -334,8 +336,10 @@ def main():
     target = "fakegarnet" if args.fake else args.qc
     if args.fake and (args.dd or args.herald):
         print("  note: --dd and --herald only act on real hardware; the fake backend ignores them")
+    if args.allow_swaps and args.track != "qiskit":
+        raise SystemExit("--allow-swaps is for the Qiskit track (the Qrisp track pins qubits by hand)")
     name = (f"{target}_{args.track}_d{args.distance}{'_X' if args.basis == 'X' else ''}"
-            f"{'_dd' if args.dd else ''}{'_herald' if args.herald else ''}"
+            f"{'_dd' if args.dd else ''}{'_herald' if args.herald else ''}{'_swaps' if args.allow_swaps else ''}"
             f"{'_' + args.tag if args.tag else ''}_{stamp}")
     json_path = f"results/{name}.json"
 
@@ -355,7 +359,7 @@ def main():
         raise SystemExit("--noise calibration needs calibration data, but it could not be fetched")
 
     record = dict(target=target, track=args.track, distance=args.distance, basis=args.basis,
-                  shots=args.shots, dd=args.dd, herald=args.herald, noise=args.noise, decoder=args.decoder,
+                  shots=args.shots, dd=args.dd, herald=args.herald, allow_swaps=args.allow_swaps, noise=args.noise, decoder=args.decoder,
                   started_at=datetime.now().isoformat(timespec="seconds"),
                   calibration_file=f"{name}_calibration.json", calibration=calibration,
                   status="running", runs=[])
@@ -368,7 +372,8 @@ def main():
 
     # 1. Run every round count as one job.
     runs = track.run(args.distance, args.rounds, args.basis, args.shots,
-                     quantum_computer=args.qc, fake=args.fake, dd=args.dd, herald=args.herald)
+                     quantum_computer=args.qc, fake=args.fake, dd=args.dd, herald=args.herald,
+                     **({"allow_swaps": True} if args.allow_swaps else {}))
     for run in runs:
         record["runs"].append({k: v for k, v in run.items() if k not in ("det_events", "obs_flips")})
     record["status"] = "decoding"
