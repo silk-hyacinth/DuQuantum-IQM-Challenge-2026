@@ -1,0 +1,37 @@
+Diagnosis of garnet_d3_20261024_161043.json  (garnet, d=3, 2000 shots)
+
+1. Detector firing rate per round (fraction of shots each check reported a change)
+   round:  X-checks   Z-checks
+  -- experiment with rounds=1 (raw logical flip rate 0.136)
+       0:       -        0.078
+       1:       -        0.095
+  -- experiment with rounds=2 (raw logical flip rate 0.461)
+       0:       -        0.073
+       1:     0.242      0.295
+       2:       -        0.158
+  -- experiment with rounds=3 (raw logical flip rate 0.503)
+       0:       -        0.072
+       1:     0.263      0.289
+       2:     0.375      0.350
+       3:       -        0.162
+  -- experiment with rounds=4 (raw logical flip rate 0.487)
+       0:       -        0.075
+       1:     0.260      0.279
+       2:     0.381      0.323
+       3:     0.389      0.350
+       4:       -        0.173
+  -- experiment with rounds=5 (raw logical flip rate 0.476)
+       0:       -        0.083
+       1:     0.268      0.280
+       2:     0.405      0.326
+       3:     0.394      0.352
+       4:     0.413      0.357
+       5:       -        0.183
+
+2. Error-model comparison (rounds=3); covariance between detector pairs
+                               firing  time dt=1  time dt=2    space
+   hardware                     0.252     0.0081     0.0054   0.0076
+   data_idle (p=0.18)           0.244     0.0022    -0.0004   0.0245
+   anc_flip (p=0.24)            0.259     0.0650     0.0005   0.0016
+   readout (p=0.18)             0.256     0.0160     0.0820   0.0017
+   A model 'matches' if its three covariance columns look like the hardware row.

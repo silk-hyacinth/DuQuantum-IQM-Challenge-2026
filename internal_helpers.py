@@ -31,7 +31,7 @@ def get_qubit_lists(circuit: stim.Circuit) -> tuple[list, list]:
     # Collect all measured qubit indices
     all_measured: set[int] = set()
     for instr in circuit.flattened():
-        if instr.name in ("M", "MR"):
+        if instr.name in ("M", "MR", "MX"):
             for t in instr.targets_copy():
                 if t.is_qubit_target:
                     all_measured.add(t.value)
@@ -58,7 +58,7 @@ def get_meas_order(circuit: stim.Circuit) -> list:
     """Returns list of Stim qubit indices in measurement order."""
     order = []
     for instr in circuit.flattened():
-        if instr.name in ("M", "MR"):
+        if instr.name in ("M", "MR", "MX"):
             for t in instr.targets_copy():
                 if t.is_qubit_target:
                     order.append(t.value)

@@ -1,0 +1,4 @@
+python run_experiment.py --qc garnet --rounds 1 2 3 4 6 8 --shots 5000 --track qiskit --basis Z
+python run_experiment.py --qc garnet --rounds 1 2 3 4 6 8 --shots 5000 --dd --track qiskit --basis Z
+python run_experiment.py --qc garnet --rounds 1 2 3 4 6 8 --shots 5000 --track qrisp --basis Z
+python run_experiment.py --qc garnet --rounds 1 2 3 4 6 8 --shots 5000 --dd --track qrisp --basis Z

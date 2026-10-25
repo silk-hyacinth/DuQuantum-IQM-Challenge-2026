@@ -24,5 +24,9 @@ matplotlib==3.11.2
 # --- Calibration-aware qubit selection (iqm_utils/get_calibration_data.py) ---
 iqm-qubit-selector
 
+# --- DuQuantum build 1: zero-SWAP placement search and loading .env credentials ---
+networkx==3.7
+python-dotenv==1.2.4
+
 # --- Optional: pulse-level extension (needs a paid Resonance organisation, ask your mentors!) ---
 # iqm-pulla==14.0.3
